@@ -4,4 +4,7 @@ Create venv
 pip install streamlit
 
 # run
-streamlit run app.py
+streamlit run backend/app.py
+
+# To run the backend:
+uvicorn backend.main:app --reload

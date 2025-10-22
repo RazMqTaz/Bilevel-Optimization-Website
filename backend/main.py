@@ -24,6 +24,7 @@ def add_text(entry: TextEntry) -> dict:
 
 @app.post("/submit_json")
 def submit_json(submission: JsonSubmission) -> dict:
+    submissions.append(submission)
     return {
         "message": "JSON submitted successfully",
     }

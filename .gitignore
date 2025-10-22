@@ -1,0 +1,42 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Distribution / packaging
+build/
+dist/
+wheels/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+.env/
+
+# UV lockfile (can be regenerated)
+uv.lock
+
+# Logs and runtime files
+*.log
+*.pid
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Streamlit cache
+.streamlit/
+
+# Test / coverage files
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Optional: if you use Jupyter for testing
+.ipynb_checkpoints/

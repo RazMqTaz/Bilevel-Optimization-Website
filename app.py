@@ -27,11 +27,13 @@ def main():
     
     with st.form("job_form", enter_to_submit=True):
         email = st.text_input("Email", key="signup_email", placeholder="you@example.com")
-        problem_file = st.file_uploader("Upload your problem file here")
+        problem_file = st.file_uploader("Upload your problem file here", type=["py"])
         submitted_job = st.form_submit_button("Submit Job", use_container_width=True)
         
     if submitted_job:
-        if email and problem_file:
+        if problem_file and not problem_file.name.lower().endswith(".py"):
+            st.error("Only .py files are allowed.")
+        elif email and problem_file:
             # Save the file locally
             save_dir = Path("uploads")
             save_dir.mkdir(exist_ok=True)

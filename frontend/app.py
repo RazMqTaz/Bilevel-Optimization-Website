@@ -29,8 +29,6 @@ def main():
 
     st.divider()
 
-    st.session_state.jobs = []
-
     with st.form("job_form", enter_to_submit=True):
         email = st.text_input(
             "Email", key="signup_email", placeholder="you@example.com"
@@ -53,11 +51,8 @@ def main():
 
                 if response.status_code == 200:
                     st.success(f"Job submitted successfully for {email}")
-
-                    # Store submission info locally for display
-                    st.session_state.jobs.append(
-                        {"email": email, "filename": problem_file.name}
-                    )
+                    # Force a rerun to refresh the jobs list from database
+                    st.rerun()
                 else:
                     st.error("Failed to submit job to backend.")
             except json.JSONDecodeError:
@@ -68,10 +63,26 @@ def main():
     st.divider()
     st.subheader("Submitted Jobs")
 
-    # Show all jobs for now
-    if st.session_state.jobs:
-        for i, job in enumerate(st.session_state.jobs, 1):
-            st.write(f"Job {i} — {job['email']} | File: `{job['filename']}`")
+    # Fetch jobs from the database (persists across refreshes)
+    try:
+        response = requests.get(f"{API_URL}/get_submissions")
+        if response.status_code == 200:
+            all_submissions = response.json()["submissions"]
+            # Filter to only show JSON submissions (actual jobs)
+            json_jobs = [sub for sub in all_submissions if sub["type"] == "json"]
+            
+            if json_jobs:
+                for i, job in enumerate(json_jobs, 1):
+                    # Extract email from the nested data structure
+                    job_data = job["data"].get("data", {})
+                    job_email = job_data.get("email", "Unknown")
+                    st.write(f"Job {i} (ID: {job['id']}) — {job_email}")
+            else:
+                st.info("No jobs submitted yet.")
+        else:
+            st.error("Failed to fetch jobs from database.")
+    except requests.exceptions.RequestException:
+        st.error("Could not connect to backend. Make sure the server is running.")
 
 
 main()

@@ -1,0 +1,27 @@
+services:
+  backend:
+    build: ./backend
+    container_name: backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - submissions_data:/app/data
+    networks:
+      - app-network
+  
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+    networks:
+      - app-network
+    environment:
+      - API_URL=http://backend:8000
+networks:
+  app-network:
+    driver: bridge
+volumes:
+  submissions_data:

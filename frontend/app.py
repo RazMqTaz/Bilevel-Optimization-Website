@@ -1,10 +1,9 @@
 import requests, json
 import streamlit as st
-
-from pathlib import Path
+import os
 
 # FastAPI endpoint
-API_URL = "http://127.0.0.1:8000"
+API_URL = os.environ.get("API_URL", "http://localhost:8000")
 
 
 def main():
@@ -29,7 +28,7 @@ def main():
 
     st.divider()
 
-    with st.form("job_form", enter_to_submit=True):
+    with st.form("job_form"):
         email = st.text_input(
             "Email", key="signup_email", placeholder="you@example.com"
         )

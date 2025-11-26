@@ -1,6 +1,6 @@
 services:
   backend:
-    build: ./backend
+    image: razmqtaz/backend:latest
     container_name: backend
     ports:
       - "8000:8000"
@@ -10,7 +10,7 @@ services:
       - app-network
   
   frontend:
-    build: ./frontend
+    image: razmqtaz/frontend:latest
     container_name: frontend
     ports:
       - "8501:8501"

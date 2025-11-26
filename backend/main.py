@@ -50,18 +50,30 @@ def add_text(entry: TextEntry) -> dict:
 
 
 @app.post("/submit_json")
-def submit_json(submission: JsonSubmission) -> dict:
+def submit_json(payload: dict) -> dict:
     conn = get_db()
-    submission_json = json.dumps(submission.model_dump())
+    cursor = conn.cursor()
     conn.execute(
         'INSERT INTO submissions (type, data) VALUES (?, ?)',
-        ('json', submission_json)
+        ('json', json.dumps(payload))
     )
     conn.commit()
+
+    submission_data = payload["data"]
+    email = submission_data["email"]
+    problem_str = submission_data["problem"]
+
+    try:
+        result = eval(problem_str)
+    except Exception:
+        result = "Error"
+
     conn.close()
+    print(email, result)
     return {
-        "message": "JSON submitted successfully",
+        "email": email, "result": result
     }
+
 
 
 @app.get("/get_submissions")

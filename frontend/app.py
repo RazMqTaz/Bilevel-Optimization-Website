@@ -42,6 +42,7 @@ def main():
             try:
                 # Read JSON file contents
                 json_data = json.load(problem_file)
+                json_data["email"] = email
 
                 # Send POST request
                 response = requests.post(
@@ -49,7 +50,12 @@ def main():
                 )
 
                 if response.status_code == 200:
-                    st.success(f"Job submitted successfully for {email}")
+                    result = response.json()
+                    st.success(f"Job submitted and solved for {email}")
+
+                    st.write(f"**Email:** {result['email']}")
+                    st.write(f"**Result:** {result['result']}")
+
                     # Force a rerun to refresh the jobs list from database
                     st.rerun()
                 else:

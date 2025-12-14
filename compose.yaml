@@ -47,3 +47,4 @@ networks:
     driver: bridge
 volumes:
   submissions_data:
+  letsencrypt:

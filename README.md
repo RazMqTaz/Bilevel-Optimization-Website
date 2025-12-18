@@ -16,3 +16,7 @@ uvicorn backend.main:app --reload
 3. To compose the docker system:
     3a. docker compose up --build
 it should show up in your docker desktop
+
+To push new build to backend-latest: 
+
+`docker build -t razmqtaz/backend:latest -f backend/Dockerfile .`

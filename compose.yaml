@@ -1,6 +1,6 @@
 services:
   backend:
-    image: razmqtaz/backend:latest
+    image: razmqtaz/backend:latest-arm64
     container_name: backend
     volumes:
       - submissions_data:/app/data
@@ -8,7 +8,9 @@ services:
       - app-network
 
   frontend:
-    image: razmqtaz/frontend:latest
+    build:
+      context: ./frontend
+    image: razmqtaz/frontend:latest-arm64
     container_name: frontend
     depends_on:
       - backend

@@ -1,3 +1,4 @@
+    
 import requests, json
 import streamlit as st
 import os
@@ -5,9 +6,81 @@ import os
 # FastAPI endpoint
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
 
+def auth_ui():
+    if st.session_state.get("logged_in"):
+        user = st.session_state.get("user", {})
+        st.success(f"Logged in as {user.get('username', '')}")
+        if st.button("Logout"):
+            st.session_state.clear()
+            st.rerun()
+        return True
+
+    mode = st.radio("Account", ["Login", "Create account"], horizontal=True)
+
+    if mode == "Create account":
+        with st.form("register_form"):
+            st.markdown("#### Create account")
+            new_username = st.text_input("Username", key="reg_user")
+            new_email = st.text_input("Email (optional)", key="reg_email")
+            new_password = st.text_input("Password", type="password", key="reg_pw")
+            new_password2 = st.text_input("Confirm password", type="password", key="reg_pw2")
+            register_btn = st.form_submit_button("Create account")
+
+        if register_btn:
+            if not new_username or not new_password:
+                st.error("Username and password are required.")
+            elif new_password != new_password2:
+                st.error("Passwords do not match.")
+            else:
+                try:
+                    r = requests.post(
+                        f"{API_URL}/register",
+                        json={
+                            "username": new_username,
+                            "email": (new_email.strip() or None),
+                            "password": new_password,
+                        },
+                        timeout=10,
+                    )
+                    if r.status_code == 200:
+                        st.success("Account created. Switch to Login.")
+                    else:
+                        st.error(r.json().get("detail", "Error creating account."))
+                except requests.exceptions.RequestException:
+                    st.error("Could not reach backend. Is FastAPI running?")
+        return False
+
+    # Login
+    with st.form("login_form"):
+        st.markdown("#### Login")
+        username = st.text_input("Username", key="login_user")
+        password = st.text_input("Password", type="password", key="login_pw")
+        login_btn = st.form_submit_button("Login")
+
+    if login_btn:
+        try:
+            r = requests.post(
+                f"{API_URL}/login",
+                json={"username": username, "password": password},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                st.session_state["logged_in"] = True
+                st.session_state["user"] = r.json().get("user", {})
+                st.rerun()
+            else:
+                st.error("Invalid username or password.")
+        except requests.exceptions.RequestException:
+            st.error("Could not reach backend. Is FastAPI running?")
+
+    return False
+
 
 def main():
     st.title("BiLevel Optimization")
+    
+    if not auth_ui():
+        st.stop()
 
     st.header("Overview")
     st.markdown(
@@ -54,7 +127,7 @@ def main():
                     st.success(f"Job submitted and solved for {email}")
 
                     st.write(f"**Email:** {result['email']}")
-                    st.write(f"**Result:** {result['result']}")
+                    st.write(f"**Status:** {result.get('message', 'Submitted')}")
 
                     # Force a rerun to refresh the jobs list from database
                     st.rerun()

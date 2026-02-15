@@ -1,11 +1,11 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, EmailStr
 from fastapi import BackgroundTasks, WebSocket
 import sys, os
 
 sys.path.insert(0, os.path.abspath("SACEProject"))
-# from SACEProject.main import main
+from SACEProject.main import main
 
 import sqlite3
 import json
@@ -54,7 +54,7 @@ def verify_password(password: str, password_hash: bytes) -> bool:
 
 class RegisterRequest(BaseModel):
     username: str
-    email: EmailStr | None = None
+    email: Optional[EmailStr] = None
     password: str
 
 class LoginRequest(BaseModel):
@@ -110,7 +110,7 @@ def submit_json(payload: dict, background_tasks: BackgroundTasks) -> dict:
         ) as tmp_file:
             json.dump(batch_config, tmp_file)
             tmp_file.flush()
-            # main(tmp_file.name)
+            main(tmp_file.name)
         
     background_tasks.add_task(run_sace_job, batch_json)
     return {"email": email, "message": "Job submitted successfully and will be processed."}

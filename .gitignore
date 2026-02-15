@@ -40,3 +40,7 @@ htmlcov/
 
 # Optional: if you use Jupyter for testing
 .ipynb_checkpoints/
+
+./submissions.db
+
+./results

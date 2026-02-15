@@ -123,14 +123,14 @@ def main():
                 )
 
                 if response.status_code == 200:
-                    result = response.json()
+                    #result = response.json()
                     st.success(f"Job submitted and solved for {email}")
 
-                    st.write(f"**Email:** {result['email']}")
-                    st.write(f"**Status:** {result.get('message', 'Submitted')}")
+                    #st.write(f"**Email:** {result['email']}")
+                    #st.write(f"**Status:** {result.get('message', 'Submitted')}")
 
                     # Force a rerun to refresh the jobs list from database
-                    st.rerun()
+                    #st.rerun()
                 else:
                     st.error("Failed to submit job to backend.")
             except json.JSONDecodeError:

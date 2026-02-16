@@ -1,2 +1,0 @@
-run_id,problem_name,algorithm_name,final_ul_fitness,total_ul_nfe,total_ll_nfe,best_ul_solution,corresponding_ll_solution
-1,SP1,sace_es_independent,1.956003e+01,180,120,"[ 1.85668949,-1.53258087, 0.41253258,-0.26601395, 0.35920437]","[ 1.29600948,-0.60726552, 4.16571199,-2.0486241 , 1.42005499]"

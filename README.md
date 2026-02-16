@@ -18,7 +18,30 @@ uvicorn backend.main:app --reload
 4. To compose the docker system:
     3a. docker compose up --build
 
+# Docker Info
+## Backend
+### To build new image in platform specific
 
-To push new build to backend-latest: 
+docker build --platform linux/arm64 -t backend:arm64 -f backend/Dockerfile .
+docker build --platform linux/amd64 -t backend:amd64 -f backend/Dockerfile .
 
-`docker build -t razmqtaz/backend:latest -f backend/Dockerfile .`
+### Tag Images
+docker tag backend:arm64 razmqtaz/backend:latest-arm64
+docker tag backend:amd64 razmqtaz/backend:latest-amd64
+
+### Push images
+docker push razmqtaz/backend:latest-arm64
+docker push razmqtaz/backend:latest-amd64
+
+## Frontend
+### To build new image in platform specific
+docker build --platform linux/arm64 -t frontend:arm64 -f frontend/Dockerfile .
+docker build --platform linux/amd64 -t frontend:amd64 -f frontend/Dockerfile .
+
+### Tag Images
+docker tag frontend:arm64 razmqtaz/frontend:latest-arm64
+docker tag frontend:amd64 razmqtaz/frontend:latest-amd64
+
+### Push Images
+docker push razmqtaz/frontend:latest-arm64
+docker push razmqtaz/frontend:latest-amd64

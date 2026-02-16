@@ -1,12 +1,12 @@
 FROM python:3.9-slim
 
 WORKDIR /app
-
-COPY requirements.txt .
+# Copy local requirements for Docker and install
+COPY frontend/requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY frontend/ ./frontend/
 
 EXPOSE 8501
 

@@ -1,3 +1,20 @@
-fastapi==0.109.1
-pydantic==2.5.1
-uvicorn[standard]==0.23.2
+# Core API dependencies
+fastapi==0.119.1
+uvicorn==0.38.0
+pydantic[email]==2.12.3
+bcrypt==4.2.1
+
+# Core numerical and data handling (from SACEProject)
+numpy<2.0
+scipy
+pandas
+
+# Surrogate modeling (Gaussian Processes)
+GPy
+scikit-learn
+
+# Utilities
+tqdm
+
+# Plotting
+matplotlib

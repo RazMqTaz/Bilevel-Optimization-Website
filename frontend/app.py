@@ -1,7 +1,4 @@
-    
-import requests, json
-import streamlit as st
-import os
+import requests, json, streamlit as st, os, time
 
 # FastAPI endpoint
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
@@ -123,18 +120,43 @@ def main():
                 )
 
                 if response.status_code == 200:
-                    #result = response.json()
-                    st.success(f"Job submitted and solved for {email}")
+                    result = response.json()
+                    job_id = result['job_id']
+                    st.success(f"Job {job_id} submitted successfully!")
 
-                    #st.write(f"**Email:** {result['email']}")
-                    #st.write(f"**Status:** {result.get('message', 'Submitted')}")
+                    # Display output area
+                    st.subheader("Job Output:")
+                    output_container = st.empty()
+                    status_container = st.empty()
+                    
+                    # Poll for output
+                    for _ in range(300):  # Poll for up to 10 minutes
+                        time.sleep(2)  # Check every 2 seconds
+                        
+                        try:
+                            output_response = requests.get(f"{API_URL}/job_output/{job_id}")
+                            if output_response.status_code == 200:
+                                data = output_response.json()
+                                output_container.code(data['output'], language='text')
+                                
+                                if data['status'] == 'complete':
+                                    status_container.success("Job Complete!")
+                                    break
+                                elif data['status'] == 'failed':
+                                    status_container.error("Job Failed")
+                                    break
+                                else:
+                                    status_container.info(f"Status: {data['status']}")
+                        except Exception as e:
+                            status_container.error(f"Error: {str(e)}")
+                            break
 
-                    # Force a rerun to refresh the jobs list from database
-                    #st.rerun()
                 else:
                     st.error("Failed to submit job to backend.")
             except json.JSONDecodeError:
                 st.error("Invalid JSON file.")
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
         else:
             st.warning("Please enter an email and upload a file.")
 
@@ -151,16 +173,15 @@ def main():
             
             if json_jobs:
                 for i, job in enumerate(json_jobs, 1):
-                    # Extract email from the nested data structure
                     job_data = job["data"].get("data", {})
                     job_email = job_data.get("email", "Unknown")
-                    st.write(f"Job {i} (ID: {job['id']}) — {job_email}")
+                    job_status = job.get("status", "unknown")
+                    st.write(f"Job {job['id']} — {job_email} — Status: {job_status}")
             else:
                 st.info("No jobs submitted yet.")
         else:
             st.error("Failed to fetch jobs from database.")
     except requests.exceptions.RequestException:
         st.error("Could not connect to backend. Make sure the server is running.")
-
 
 main()

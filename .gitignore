@@ -43,4 +43,4 @@ htmlcov/
 
 ./submissions.db
 
-./results
+.results/

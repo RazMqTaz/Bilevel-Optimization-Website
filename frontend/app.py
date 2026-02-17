@@ -75,6 +75,22 @@ def auth_ui():
 
 def main():
     st.title("BiLevel Optimization")
+
+    st.markdown("""
+        <style>
+        .terminal-output {
+            height: 400px;
+            overflow-y: auto;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+            border: 1px solid #333;
+        }
+        </style>
+    """, unsafe_allow_html=True)
     
     if not auth_ui():
         st.stop()
@@ -126,6 +142,7 @@ def main():
 
                     # Display output area
                     st.subheader("Job Output:")
+                    # This creates the area where we will inject our custom styled div
                     output_container = st.empty()
                     status_container = st.empty()
                     
@@ -137,7 +154,10 @@ def main():
                             output_response = requests.get(f"{API_URL}/job_output/{job_id}")
                             if output_response.status_code == 200:
                                 data = output_response.json()
-                                output_container.code(data['output'], language='text')
+                                output_container.markdown(
+                                    f'<div class="terminal-output">{data["output"]}</div>', 
+                                    unsafe_allow_html=True
+                                )
                                 
                                 if data['status'] == 'complete':
                                     status_container.success("Job Complete!")

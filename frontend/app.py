@@ -114,9 +114,13 @@ def main():
                 json_data = json.load(problem_file)
                 json_data["email"] = email
 
-                # Send POST request
+                user = st.session_state.get("user", {})
+                user_id = user.get("id")
+
+                # Send POST request (include user_id so submissions are stored per user)
                 response = requests.post(
-                    f"{API_URL}/submit_json", json={"data": json_data}
+                    f"{API_URL}/submit_json",
+                    json={"data": json_data, "user_id": user_id},
                 )
 
                 if response.status_code == 200:
@@ -134,7 +138,11 @@ def main():
                         time.sleep(2)  # Check every 2 seconds
                         
                         try:
-                            output_response = requests.get(f"{API_URL}/job_output/{job_id}")
+                            user_id = st.session_state.get("user", {}).get("id")
+                            url = f"{API_URL}/job_output/{job_id}"
+                            if user_id is not None:
+                                url += f"?user_id={user_id}"
+                            output_response = requests.get(url)
                             if output_response.status_code == 200:
                                 data = output_response.json()
                                 output_container.code(data['output'], language='text')
@@ -163,14 +171,18 @@ def main():
     st.divider()
     st.subheader("Submitted Jobs")
 
-    # Fetch jobs from the database (persists across refreshes)
+    # Fetch jobs from the database (only this user's submissions)
     try:
-        response = requests.get(f"{API_URL}/get_submissions")
+        user_id = st.session_state.get("user", {}).get("id")
+        url = f"{API_URL}/get_submissions"
+        if user_id is not None:
+            url += f"?user_id={user_id}"
+        response = requests.get(url)
         if response.status_code == 200:
             all_submissions = response.json()["submissions"]
             # Filter to only show JSON submissions (actual jobs)
             json_jobs = [sub for sub in all_submissions if sub["type"] == "json"]
-            
+
             if json_jobs:
                 for i, job in enumerate(json_jobs, 1):
                     job_data = job["data"].get("data", {})

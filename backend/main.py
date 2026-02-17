@@ -36,9 +36,11 @@ def init_db():
         """
         CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
             type TEXT NOT NULL,
             data TEXT NOT NULL,
-            status TEXT DEFAULT 'pending'
+            status TEXT DEFAULT 'pending',
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """
     )
@@ -53,6 +55,11 @@ def init_db():
         )
     """
     )
+    # Migration: add user_id to existing submissions table if missing
+    cursor = conn.execute("PRAGMA table_info(submissions)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if "user_id" not in columns:
+        conn.execute("ALTER TABLE submissions ADD COLUMN user_id INTEGER REFERENCES users(id)")
     conn.commit()
     conn.close()
 
@@ -81,6 +88,7 @@ class LoginRequest(BaseModel):
 
 class TextEntry(BaseModel):
     text: str
+    user_id: Optional[int] = None
 
 
 class JsonSubmission(BaseModel):
@@ -92,7 +100,8 @@ def add_text(entry: TextEntry) -> dict:
     conn = get_db()
     entry_json = json.dumps(entry.model_dump())
     conn.execute(
-        "INSERT INTO submissions (type, data) VALUES (?, ?)", ("text", entry_json)
+        "INSERT INTO submissions (user_id, type, data) VALUES (?, ?, ?)",
+        (entry.user_id, "text", entry_json),
     )
     conn.commit()
     conn.close()
@@ -162,16 +171,17 @@ def run_sace_job(batch_config, job_id) -> None:
 
 @app.post("/submit_json")
 def submit_json(payload: dict, background_tasks: BackgroundTasks) -> dict:
+    user_id = payload.get("user_id")  # Frontend sends logged-in user's id
     conn = get_db()
     cursor = conn.execute(
-        "INSERT INTO submissions (type, data, status) VALUES (?, ?, ?)",
-        ("json", json.dumps(payload), "pending"),
+        "INSERT INTO submissions (user_id, type, data, status) VALUES (?, ?, ?, ?)",
+        (user_id, "json", json.dumps(payload), "pending"),
     )
     job_id = cursor.lastrowid
     conn.commit()
     conn.close()
 
-    submission_data = payload["data"]
+    submission_data = payload.get("data", {})
     email = submission_data.get("email", "unknown")
 
     batch_json = {
@@ -196,23 +206,25 @@ def submit_json(payload: dict, background_tasks: BackgroundTasks) -> dict:
 
 
 @app.get("/job_output/{job_id}")
-def get_job_output(job_id: int):
-    """Get current output for a job"""
-    output = job_outputs.get(job_id, "")
-    
-    # Check status
+def get_job_output(job_id: int, user_id: Optional[int] = None):
+    """Get current output for a job. If user_id is given, only return output for that user's job."""
     conn = get_db()
-    row = conn.execute(
-        "SELECT status FROM submissions WHERE id=?", (job_id,)
-    ).fetchone()
+    if user_id is not None:
+        row = conn.execute(
+            "SELECT status, user_id FROM submissions WHERE id = ? AND user_id = ?",
+            (job_id, user_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT status, user_id FROM submissions WHERE id=?", (job_id,)
+        ).fetchone()
     conn.close()
-    
-    status = row["status"] if row else "unknown"
-    
-    return {
-        "output": output,
-        "status": status
-    }
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found or access denied.")
+
+    output = job_outputs.get(job_id, "")
+    return {"output": output, "status": row["status"]}
 
 
 @app.websocket("/ws/job/{job_id}")
@@ -261,16 +273,28 @@ async def websocket_job_output(websocket: WebSocket, job_id: int):
 
 
 @app.get("/get_submissions")
-def get_submissions() -> dict:
+def get_submissions(user_id: Optional[int] = None) -> dict:
     conn = get_db()
-    cursor = conn.execute("SELECT * FROM submissions")
+    if user_id is not None:
+        cursor = conn.execute(
+            "SELECT * FROM submissions WHERE user_id = ? ORDER BY id DESC",
+            (user_id,),
+        )
+    else:
+        cursor = conn.execute("SELECT * FROM submissions ORDER BY id DESC")
     rows = cursor.fetchall()
     conn.close()
 
     submissions_list = []
     for row in rows:
         submissions_list.append(
-            {"id": row["id"], "type": row["type"], "data": json.loads(row["data"]), "status": row["status"]}
+            {
+                "id": row["id"],
+                "user_id": row["user_id"] if "user_id" in row.keys() else None,
+                "type": row["type"],
+                "data": json.loads(row["data"]),
+                "status": row["status"],
+            }
         )
 
     return {"submissions": submissions_list}

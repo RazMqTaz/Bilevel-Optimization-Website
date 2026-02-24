@@ -13,6 +13,10 @@ import sys, os, asyncio
 sys.path.insert(0, os.path.abspath("SACEProject"))
 from SACEProject.main import main
 
+import os
+import re
+import sys
+from io import StringIO
 import sqlite3
 import json
 import tempfile
@@ -31,6 +35,30 @@ def get_db():
 
 
 def init_db():
+    conn = get_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            data TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            result_data TEXT  -- NEW COLUMN
+        )
+    """
+    )
+    conn = get_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            data TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            result_data TEXT  -- NEW COLUMN
+        )
+    """
+    )
     conn = get_db()
     conn.execute(
         """
@@ -100,8 +128,7 @@ def add_text(entry: TextEntry) -> dict:
 
 
 def run_sace_job(batch_config, job_id) -> None:
-    import sys
-    from io import StringIO
+
     
     # Initialize output buffer for this job
     job_outputs[job_id] = ""
@@ -132,15 +159,42 @@ def run_sace_job(batch_config, job_id) -> None:
             json.dump(batch_config, tmp_file)
             tmp_file.flush()
             
-            # Force unbuffered output
-            import os
             os.environ['PYTHONUNBUFFERED'] = '1'
             
             main(tmp_file.name)
 
-        # Mark job as complete in database
+        # NEW: Parse the captured stdout to find the filepath
+        output_str = job_outputs[job_id]
+        
+        # Use findall and grab the last one, since it prints at the start and end
+        filepath_matches = re.findall(r"All results have been saved to:\s*(.+)", output_str)
+        
+        result_content = ""
+        if filepath_matches:
+            raw_filepath = filepath_matches[-1].strip()
+            
+            # Since SACEProject might save relative to its own folder, check both paths
+            possible_paths = [
+                raw_filepath,
+                os.path.join("SACEProject", raw_filepath)
+            ]
+            
+            actual_filepath = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    actual_filepath = path
+                    break
+            
+            if actual_filepath:
+                with open(actual_filepath, "r") as f:
+                    result_content = f.read()
+            else:
+                # This will print to your terminal so you know if it failed to find the file
+                print(f"[DEBUG] Could not find the CSV file at {possible_paths}")
+
+        # Mark job as complete and save the extracted file contents
         conn = get_db()
-        conn.execute("UPDATE submissions SET status='complete' WHERE id=?", (job_id,))
+        conn.execute("UPDATE submissions SET status='complete', result_data=? WHERE id=?", (result_content, job_id))
         conn.commit()
         conn.close()
 
@@ -213,6 +267,17 @@ def get_job_output(job_id: int):
         "output": output,
         "status": status
     }
+
+
+@app.get("/job_results/{job_id}")
+def get_job_results(job_id: int):
+    conn = get_db()
+    row = conn.execute("SELECT result_data FROM submissions WHERE id=?", (job_id,)).fetchone()
+    conn.close()
+    
+    if row and row["result_data"]:
+        return {"data": row["result_data"]}
+    return {"error": "No results found"}
 
 
 @app.websocket("/ws/job/{job_id}")

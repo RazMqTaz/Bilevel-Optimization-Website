@@ -1,14 +1,42 @@
-Create venv
+## Local setup (no Docker)
 
-# install requirements.txt, both in the root and in the SACEProject folder
+### 1. Create a virtual environment and install dependencies
 
-# run
+Using the project venv ensures the backend and frontend use the same Python that has FastAPI, uvicorn, etc. (If you run `uvicorn` from pipx, it uses a different Python and will fail with "No module named 'fastapi'".)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate   # On Windows: .venv\Scripts\activate
+pip install -e .
+```
+
+Or install from the full lockfile:
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Run the frontend
+
+```bash
 streamlit run frontend/app.py
+```
 
-# To run the backend:
-uvicorn backend.main:app --reload
+### 3. Run the backend
 
-(It might prompt you to install more dependencies not sure, the dockerfiles automatically install them so requirements.txt is probably out of date.
+Use the **same** Python as the one where you installed packages (the venv), so that uvicorn can see FastAPI:
+
+```bash
+python -m uvicorn backend.main:app --reload
+```
+
+Or use the helper script (creates `.venv` and installs deps if needed, then runs the backend):
+
+```bash
+./run_backend.sh
+```
+
+(It might prompt you to install more dependencies; the Dockerfiles install them automatically so `requirements.txt` may be slightly out of date.)
 
 
 # To run Docker:

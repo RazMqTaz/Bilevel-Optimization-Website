@@ -10,9 +10,6 @@ from pydantic import BaseModel, EmailStr
 from io import StringIO
 import sys, os, asyncio
 
-sys.path.insert(0, os.path.abspath("SACEProject"))
-from SACEProject.main import main
-
 import sqlite3
 import json
 import tempfile
@@ -111,10 +108,28 @@ def add_text(entry: TextEntry) -> dict:
 def run_sace_job(batch_config, job_id) -> None:
     import sys
     from io import StringIO
-    
+
+    # Lazy import SACEProject so the app can start without it (e.g. when not cloned)
+    try:
+        sace_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "SACEProject"))
+        if sace_root not in sys.path:
+            sys.path.insert(0, sace_root)
+        from SACEProject.main import main
+    except ModuleNotFoundError:
+        error_msg = (
+            "\n[ERROR] SACEProject not found. Clone the SACE repository into the project root "
+            "(e.g. SACEProject/main.py) to run jobs.\n"
+        )
+        job_outputs[job_id] = job_outputs.get(job_id, "") + error_msg
+        conn = get_db()
+        conn.execute("UPDATE submissions SET status='failed' WHERE id=?", (job_id,))
+        conn.commit()
+        conn.close()
+        return
+
     # Initialize output buffer for this job
     job_outputs[job_id] = ""
-    
+
     # Capture only stdout (not stderr - that's just warnings)
     old_stdout = sys.stdout
     

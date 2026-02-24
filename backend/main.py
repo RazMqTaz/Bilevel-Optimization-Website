@@ -1,32 +1,28 @@
 from typing import Any, Dict, Optional
-from fastapi import (
-    FastAPI,
-    HTTPException,
-    BackgroundTasks,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr
-from io import StringIO
 import sys, os, asyncio
-
-sys.path.insert(0, os.path.abspath("SACEProject"))
-from SACEProject.main import main
 
 import sqlite3
 import json
-import tempfile
 import bcrypt
+from redis import Redis
+
+from backend.celery_worker import celery_app, run_sace_job
+
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
 
 app = FastAPI()
 
-active_connections: Dict[int, WebSocket] = {}
-job_outputs: Dict[int, str] = {}
+
+# ── Database ──────────────────────────────────────────────────────────────────
 
 
 def get_db():
     conn = sqlite3.connect("submissions.db")
-    conn.row_factory = sqlite3.Row  # This makes rows accessible as dictionaries
+    conn.row_factory = sqlite3.Row
     return conn
 
 
@@ -60,12 +56,18 @@ def init_db():
 init_db()
 
 
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+
+
 def hash_password(password: str) -> bytes:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
 
 
 def verify_password(password: str, password_hash: bytes) -> bool:
     return bcrypt.checkpw(password.encode("utf-8"), password_hash)
+
+
+# ── Models ────────────────────────────────────────────────────────────────────
 
 
 class RegisterRequest(BaseModel):
@@ -83,85 +85,24 @@ class TextEntry(BaseModel):
     text: str
 
 
-class JsonSubmission(BaseModel):
-    data: Dict[str, Any]
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
 @app.post("/add_text")
 def add_text(entry: TextEntry) -> dict:
     conn = get_db()
-    entry_json = json.dumps(entry.model_dump())
     conn.execute(
-        "INSERT INTO submissions (type, data) VALUES (?, ?)", ("text", entry_json)
+        "INSERT INTO submissions (type, data) VALUES (?, ?)",
+        ("text", json.dumps(entry.model_dump())),
     )
     conn.commit()
     conn.close()
     return {"message": "text entry appended successfully"}
 
 
-def run_sace_job(batch_config, job_id) -> None:
-    import sys
-    from io import StringIO
-    
-    # Initialize output buffer for this job
-    job_outputs[job_id] = ""
-    
-    # Capture only stdout (not stderr - that's just warnings)
-    old_stdout = sys.stdout
-    
-    # Create a custom writer that updates job_outputs in real-time
-    class OutputCapture(StringIO):
-        def write(self, s):
-            super().write(s)
-            if job_id in job_outputs:
-                job_outputs[job_id] += s
-            # Also print to terminal
-            old_stdout.write(s)
-            old_stdout.flush()
-            self.flush()
-            return len(s)
-        
-        def flush(self):
-            super().flush()
-    
-    sys.stdout = OutputCapture()
-    # Don't redirect stderr - let warnings go to terminal only
-
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tmp_file:
-            json.dump(batch_config, tmp_file)
-            tmp_file.flush()
-            
-            # Force unbuffered output
-            import os
-            os.environ['PYTHONUNBUFFERED'] = '1'
-            
-            main(tmp_file.name)
-
-        # Mark job as complete in database
-        conn = get_db()
-        conn.execute("UPDATE submissions SET status='complete' WHERE id=?", (job_id,))
-        conn.commit()
-        conn.close()
-
-    except Exception as e:
-        error_msg = f"\n[ERROR] Job {job_id} failed: {str(e)}\n"
-        job_outputs[job_id] += error_msg
-        old_stdout.write(error_msg)  # Also print error to terminal
-        
-        # Mark job as failed in database
-        conn = get_db()
-        conn.execute("UPDATE submissions SET status='failed' WHERE id=?", (job_id,))
-        conn.commit()
-        conn.close()
-        
-    finally:
-        # Restore stdout
-        sys.stdout = old_stdout
-
-
 @app.post("/submit_json")
-def submit_json(payload: dict, background_tasks: BackgroundTasks) -> dict:
+def submit_json(payload: dict) -> dict:
+    """Submit a SACE job — enqueues it on Celery via Redis."""
     conn = get_db()
     cursor = conn.execute(
         "INSERT INTO submissions (type, data, status) VALUES (?, ?, ?)",
@@ -181,13 +122,9 @@ def submit_json(payload: dict, background_tasks: BackgroundTasks) -> dict:
         "settings": submission_data.get("settings", {}),
     }
 
-    # Mark job as running
-    conn = get_db()
-    conn.execute("UPDATE submissions SET status='running' WHERE id=?", (job_id,))
-    conn.commit()
-    conn.close()
+    # Dispatch to Celery worker
+    run_sace_job.delay(batch_json, job_id)
 
-    background_tasks.add_task(run_sace_job, batch_json, job_id)
     return {
         "job_id": job_id,
         "email": email,
@@ -197,83 +134,106 @@ def submit_json(payload: dict, background_tasks: BackgroundTasks) -> dict:
 
 @app.get("/job_output/{job_id}")
 def get_job_output(job_id: int):
-    """Get current output for a job"""
-    output = job_outputs.get(job_id, "")
-    
-    # Check status
+    """HTTP polling endpoint — returns current accumulated output."""
+    output = redis_client.get(f"job_output:{job_id}") or ""
+
     conn = get_db()
     row = conn.execute(
         "SELECT status FROM submissions WHERE id=?", (job_id,)
     ).fetchone()
     conn.close()
-    
+
     status = row["status"] if row else "unknown"
-    
-    return {
-        "output": output,
-        "status": status
-    }
+    return {"output": output, "status": status}
+
+
+@app.get("/job_stream/{job_id}")
+async def job_stream_sse(job_id: int):
+    """Server-Sent Events endpoint for real-time streaming."""
+
+    async def event_generator():
+        pubsub = redis_client.pubsub()
+        pubsub.subscribe(f"job_stream:{job_id}")
+
+        # First, send any output that already exists
+        existing = redis_client.get(f"job_output:{job_id}")
+        if existing:
+            yield f"data: {json.dumps({'output': existing})}\n\n"
+
+        try:
+            while True:
+                msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if msg and msg["type"] == "message":
+                    chunk = msg["data"]
+                    if chunk == "\n[DONE]\n":
+                        yield f"data: {json.dumps({'done': True})}\n\n"
+                        break
+                    yield f"data: {json.dumps({'output': chunk})}\n\n"
+                else:
+                    # Send keepalive to prevent timeout
+                    yield ": keepalive\n\n"
+                await asyncio.sleep(0.1)
+        finally:
+            pubsub.unsubscribe()
+            pubsub.close()
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.websocket("/ws/job/{job_id}")
 async def websocket_job_output(websocket: WebSocket, job_id: int):
+    """WebSocket endpoint for real-time streaming (alternative to SSE)."""
     await websocket.accept()
-    active_connections[job_id] = websocket
+
+    pubsub = redis_client.pubsub()
+    pubsub.subscribe(f"job_stream:{job_id}")
 
     try:
-        # Check if job already has output
-        if job_id in job_outputs:
-            await websocket.send_text(job_outputs[job_id])
-            await websocket.send_json({"status": "complete"})
-            return
-        
-        # Poll for output while job is running
-        last_position = 0
+        # Send existing output first
+        existing = redis_client.get(f"job_output:{job_id}")
+        if existing:
+            await websocket.send_text(existing)
+
         while True:
-            await asyncio.sleep(0.5)
-
-            # Check if any new output
-            if job_id in job_outputs:
-                output = job_outputs[job_id]
-
-                # Send new output
-                if len(output) > last_position:
-                    new_output = output[last_position:]
-                    await websocket.send_text(new_output)
-                    last_position = len(output)
-                
-                # Check if job is complete
-                conn = get_db()
-                row = conn.execute(
-                    "SELECT status FROM submissions WHERE id=?", (job_id,)
-                ).fetchone()
-                conn.close()
-                
-                if row and row['status'] in ['complete', 'failed']:
-                    await websocket.send_json({"status": row['status']})
+            msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5)
+            if msg and msg["type"] == "message":
+                chunk = msg["data"]
+                if chunk == "\n[DONE]\n":
+                    conn = get_db()
+                    row = conn.execute(
+                        "SELECT status FROM submissions WHERE id=?",
+                        (job_id,),
+                    ).fetchone()
+                    conn.close()
+                    status = row["status"] if row else "complete"
+                    await websocket.send_json({"status": status})
                     break
-                    
+                await websocket.send_text(chunk)
+            await asyncio.sleep(0.1)
+
     except WebSocketDisconnect:
         print(f"WebSocket disconnected for job {job_id}")
     finally:
-        if job_id in active_connections:
-            del active_connections[job_id]
+        pubsub.unsubscribe()
+        pubsub.close()
 
 
 @app.get("/get_submissions")
 def get_submissions() -> dict:
     conn = get_db()
-    cursor = conn.execute("SELECT * FROM submissions")
-    rows = cursor.fetchall()
+    rows = conn.execute("SELECT * FROM submissions").fetchall()
     conn.close()
-
-    submissions_list = []
-    for row in rows:
-        submissions_list.append(
-            {"id": row["id"], "type": row["type"], "data": json.loads(row["data"]), "status": row["status"]}
-        )
-
-    return {"submissions": submissions_list}
+    return {
+        "submissions": [
+            {
+                "id": r["id"],
+                "type": r["type"],
+                "data": json.loads(r["data"]),
+                "status": r["status"],
+            }
+            for r in rows
+        ]
+    }
 
 
 @app.post("/register")
@@ -282,9 +242,7 @@ def register(req: RegisterRequest) -> dict:
         raise HTTPException(
             status_code=400, detail="Password must be at least 8 characters."
         )
-
     pw_hash = hash_password(req.password)
-
     try:
         conn = get_db()
         conn.execute(

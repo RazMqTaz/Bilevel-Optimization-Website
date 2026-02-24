@@ -1,4 +1,17 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    volumes:
+      - redis_data:/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   backend:
     image: razmqtaz/backend:latest-arm64
     container_name: backend
@@ -6,6 +19,26 @@ services:
       - submissions_data:/app/data
     networks:
       - app-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+
+  celery-worker:
+    image: razmqtaz/backend:latest-arm64
+    container_name: celery-worker
+    # Override the default CMD to run the Celery worker instead of uvicorn
+    command: celery -A celery_worker worker --loglevel=info --concurrency=2
+    volumes:
+      - submissions_data:/app/data
+    networks:
+      - app-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://redis:6379/0
 
   frontend:
     build:
@@ -54,5 +87,6 @@ networks:
 
 volumes:
   submissions_data:
+  redis_data:
   letsencrypt:
   certbot-www:

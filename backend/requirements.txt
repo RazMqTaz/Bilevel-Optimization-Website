@@ -19,3 +19,6 @@ tqdm
 
 # Plotting
 matplotlib
+
+celery[redis]>=5.3
+redis>=5.0

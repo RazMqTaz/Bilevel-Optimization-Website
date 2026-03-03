@@ -144,39 +144,13 @@ def main():
                                 if data['status'] == 'complete':
                                     status_container.success("Job Complete!")
                                     
-                                    # Fetch results
+                                    # Fetch results and save to session state instead of plotting immediately
                                     res = requests.get(f"{API_URL}/job_results/{job_id}")
                                     if res.status_code == 200:
                                         result_data = res.json().get("data", "")
                                         if result_data:
-                                            st.subheader("Optimization Results")
-                                            
-                                            try:
-                                                # Parse the CSV text into a Pandas DataFrame
-                                                df = pd.read_csv(StringIO(result_data))
-                                                
-                                                # Show the raw data table
-                                                st.dataframe(df) 
-                                                
-                                                st.write("### Performance Graph")
-                                                # Filter to only show numeric columns for graphing
-                                                numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns.tolist()
-                                                
-                                                if numeric_cols:
-                                                    # Give the user a dropdown to select which metrics to plot
-                                                    # Defaults to the first numeric column it finds (usually fitness or evaluations)
-                                                    y_axes = st.multiselect(
-                                                        "Select metrics to plot:", 
-                                                        numeric_cols, 
-                                                        default=[numeric_cols[0]]
-                                                    )
-                                                    if y_axes:
-                                                        st.line_chart(df[y_axes])
-                                                else:
-                                                    st.info("No numeric data found to plot.")
-
-                                            except Exception as e:
-                                                st.error(f"Error parsing or plotting data: {e}")
+                                            # Save the raw CSV data into Streamlit's memory
+                                            st.session_state["plot_data"] = result_data
                                         else:
                                             st.warning("Job completed, but no result data was returned.")
                                     break
@@ -197,6 +171,36 @@ def main():
                 st.error(f"Error: {str(e)}")
         else:
             st.warning("Please enter an email and upload a file.")
+            
+    if "plot_data" in st.session_state:
+        st.divider()
+        st.subheader("Optimization Results")
+        try:
+            # Parse the CSV text into a Pandas DataFrame
+            df = pd.read_csv(StringIO(st.session_state["plot_data"]))
+            
+            # Show the raw data table
+            st.dataframe(df) 
+            
+            st.write("### Performance Graph")
+            # Filter to only show numeric columns for graphing
+            numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns.tolist()
+            
+            if numeric_cols:
+                # Give the user a dropdown to select which metrics to plot
+                y_axes = st.multiselect(
+                    "Select metrics to plot:", 
+                    numeric_cols, 
+                    default=[numeric_cols[0]],
+                    key="metric_selector" # Added a key to stabilize the widget
+                )
+                if y_axes:
+                    st.line_chart(df[y_axes])
+            else:
+                st.info("No numeric data found to plot.")
+
+        except Exception as e:
+            st.error(f"Error parsing or plotting data: {e}")
 
     st.divider()
     st.subheader("Submitted Jobs")

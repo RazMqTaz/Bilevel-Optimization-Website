@@ -128,8 +128,6 @@ def add_text(entry: TextEntry) -> dict:
 
 
 def run_sace_job(batch_config, job_id) -> None:
-
-    
     # Initialize output buffer for this job
     job_outputs[job_id] = ""
     
@@ -152,7 +150,6 @@ def run_sace_job(batch_config, job_id) -> None:
             super().flush()
     
     sys.stdout = OutputCapture()
-    # Don't redirect stderr - let warnings go to terminal only
 
     try:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tmp_file:
@@ -163,34 +160,54 @@ def run_sace_job(batch_config, job_id) -> None:
             
             main(tmp_file.name)
 
-        # NEW: Parse the captured stdout to find the filepath
+        # Parse the captured stdout to find the summary filepath
         output_str = job_outputs[job_id]
-        
-        # Use findall and grab the last one, since it prints at the start and end
         filepath_matches = re.findall(r"All results have been saved to:\s*(.+)", output_str)
         
         result_content = ""
         if filepath_matches:
             raw_filepath = filepath_matches[-1].strip()
-            
-            # Since SACEProject might save relative to its own folder, check both paths
-            possible_paths = [
-                raw_filepath,
-                os.path.join("SACEProject", raw_filepath)
-            ]
-            
             actual_filepath = None
-            for path in possible_paths:
-                if os.path.exists(path):
-                    actual_filepath = path
-                    break
             
+            # --- NEW LOGIC: Hunt for the History File ---
+            # 1. Extract the timestamp (e.g., 20260224-155806) from the summary file path
+            timestamp_match = re.search(r"(\d{8}-\d{6})", raw_filepath)
+            
+            if timestamp_match:
+                timestamp = timestamp_match.group(1)
+                possible_history_dirs = [
+                    "results/history",
+                    os.path.join("SACEProject", "results/history")
+                ]
+                
+                # 2. Search the history directories for a file with that timestamp
+                for h_dir in possible_history_dirs:
+                    if os.path.exists(h_dir):
+                        for filename in os.listdir(h_dir):
+                            if timestamp in filename and filename.endswith(".csv"):
+                                actual_filepath = os.path.join(h_dir, filename)
+                                break
+                    if actual_filepath:
+                        break
+            
+            # --- FALLBACK LOGIC ---
+            # 3. If no history file is found, fallback to the original summary file
+            if not actual_filepath:
+                possible_paths = [
+                    raw_filepath,
+                    os.path.join("SACEProject", raw_filepath)
+                ]
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        actual_filepath = path
+                        break
+            
+            # 4. Read whatever file we successfully found
             if actual_filepath:
                 with open(actual_filepath, "r") as f:
                     result_content = f.read()
             else:
-                # This will print to your terminal so you know if it failed to find the file
-                print(f"[DEBUG] Could not find the CSV file at {possible_paths}")
+                print(f"[DEBUG] Could not find the history or summary CSV file.")
 
         # Mark job as complete and save the extracted file contents
         conn = get_db()
@@ -201,16 +218,14 @@ def run_sace_job(batch_config, job_id) -> None:
     except Exception as e:
         error_msg = f"\n[ERROR] Job {job_id} failed: {str(e)}\n"
         job_outputs[job_id] += error_msg
-        old_stdout.write(error_msg)  # Also print error to terminal
+        old_stdout.write(error_msg)
         
-        # Mark job as failed in database
         conn = get_db()
         conn.execute("UPDATE submissions SET status='failed' WHERE id=?", (job_id,))
         conn.commit()
         conn.close()
         
     finally:
-        # Restore stdout
         sys.stdout = old_stdout
 
 

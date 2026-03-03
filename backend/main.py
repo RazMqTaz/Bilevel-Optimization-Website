@@ -1,252 +1,351 @@
 
-import requests, json, streamlit as st, os, time
+from typing import Any, Dict, Optional
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, Header
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, EmailStr
+import sys, os, asyncio, uuid
 
-# FastAPI endpoint
-API_URL = os.environ.get("API_URL", "http://localhost:8000")
+import sqlite3
+import json
+import bcrypt
+from redis import Redis
 
+from backend.celery_worker import celery_app, run_sace_job
 
-def auth_headers() -> dict:
-    """Return Authorization header using the stored session token."""
-    token = st.session_state.get("token")
-    if token:
-        return {"Authorization": f"Bearer {token}"}
-    return {}
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
 
+app = FastAPI()
 
-def auth_ui():
-    if st.session_state.get("logged_in"):
-        user = st.session_state.get("user", {})
-        st.success(f"Logged in as {user.get('username', '')}")
-        if st.button("Logout"):
-            # Invalidate session on the backend
-            try:
-                requests.post(
-                    f"{API_URL}/logout",
-                    headers=auth_headers(),
-                    timeout=10,
-                )
-            except requests.exceptions.RequestException:
-                pass
-            st.session_state.clear()
-            st.rerun()
-        return True
-
-    mode = st.radio("Account", ["Login", "Create account"], horizontal=True)
-
-    if mode == "Create account":
-        with st.form("register_form"):
-            st.markdown("#### Create account")
-            new_username = st.text_input("Username", key="reg_user")
-            new_email = st.text_input("Email (optional)", key="reg_email")
-            new_password = st.text_input("Password", type="password", key="reg_pw")
-            new_password2 = st.text_input(
-                "Confirm password", type="password", key="reg_pw2"
-            )
-            register_btn = st.form_submit_button("Create account")
-
-        if register_btn:
-            if not new_username or not new_password:
-                st.error("Username and password are required.")
-            elif new_password != new_password2:
-                st.error("Passwords do not match.")
-            else:
-                try:
-                    r = requests.post(
-                        f"{API_URL}/register",
-                        json={
-                            "username": new_username,
-                            "email": (new_email.strip() or None),
-                            "password": new_password,
-                        },
-                        timeout=10,
-                    )
-                    if r.status_code == 200:
-                        st.success("Account created. Switch to Login.")
-                    else:
-                        st.error(r.json().get("detail", "Error creating account."))
-                except requests.exceptions.RequestException:
-                    st.error("Could not reach backend. Is FastAPI running?")
-        return False
-
-    # Login
-    with st.form("login_form"):
-        st.markdown("#### Login")
-        username = st.text_input("Username", key="login_user")
-        password = st.text_input("Password", type="password", key="login_pw")
-        login_btn = st.form_submit_button("Login")
-
-    if login_btn:
-        try:
-            r = requests.post(
-                f"{API_URL}/login",
-                json={"username": username, "password": password},
-                timeout=10,
-            )
-            if r.status_code == 200:
-                data = r.json()
-                st.session_state["logged_in"] = True
-                st.session_state["user"] = data.get("user", {})
-                st.session_state["token"] = data.get("token", "")
-                st.rerun()
-            else:
-                st.error("Invalid username or password.")
-        except requests.exceptions.RequestException:
-            st.error("Could not reach backend. Is FastAPI running?")
-
-    return False
+SESSION_TTL = 86400  # 24 hours
 
 
-def main():
-    st.title("BiLevel Optimization")
+# ── Database ──────────────────────────────────────────────────────────────────
 
-    if not auth_ui():
-        st.stop()
 
-    st.header("Overview")
-    st.markdown(
-        "Bilevel optimization, a class of hierarchical optimization problems, presents a significant research challenge due to its inherent NP-hard nature, especially in non-convex settings. In this work, we address the limitations of existing solvers. "
-        + "Classical gradient-based methods are often inapplicable to the non-convex and non-differentiable landscapes common in practice, while derivative-free methods like nested evolutionary algorithms are rendered intractable by a prohibitively high query complexity. "
-        + "\n\nTo this end, we propose a novel framework, the Surrogate-Assisted Co-evolutionary Evolutionary Strategy (SACE-ES), which synergizes the global search capabilities of evolutionary computation with the data-driven efficiency of surrogate modeling. "
-        + "\n\nThe core innovation of our framework is a multi-surrogate, constraint-aware architecture that decouples the complex bilevel problem. We use separate Gaussian Process (GP) models to approximate the lower-level optimal solution vector and its corresponding constraint violations. "
-        + "This allows our algorithm to make intelligent, cheap evaluations to guide the search, reserving expensive, true evaluations only for the most informative candidate solutions."
-    )
+def get_db():
+    conn = sqlite3.connect("submissions.db")
+    conn.row_factory = sqlite3.Row
+    return conn
 
-    st.header("Authors")
-    st.markdown(
-        "_Sanup Araballi, Venkata Gandikota, Pranay Sharma, Prashant Khanduri, and Chilukuri K Mohan_"
-    )
-    st.write("[Github](https://github.com/sanuparaballi/SACEProject)")
 
-    st.divider()
-
-    # ── Job Submission ────────────────────────────────────────────────────────
-
-    with st.form("job_form"):
-        email = st.text_input(
-            "Email", key="signup_email", placeholder="you@example.com"
+def init_db():
+    conn = get_db()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            data TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
-        problem_file = st.file_uploader("Upload your problem file here", type=["json"])
-        submitted_job = st.form_submit_button("Submit Job", use_container_width=True)
+    """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            email TEXT UNIQUE,
+            password_hash BLOB NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """
+    )
+    conn.commit()
+    conn.close()
 
-    if submitted_job:
-        if problem_file and not problem_file.name.lower().endswith(".json"):
-            st.error("Only .json files are allowed.")
-        elif email and problem_file:
-            try:
-                json_data = json.load(problem_file)
-                json_data["email"] = email
 
-                response = requests.post(
-                    f"{API_URL}/submit_json",
-                    json={"data": json_data},
-                    headers=auth_headers(),
-                )
+init_db()
 
-                if response.status_code == 200:
-                    result = response.json()
-                    job_id = result["job_id"]
-                    st.success(f"Job {job_id} submitted successfully!")
 
-                    st.subheader("Job Output:")
-                    output_container = st.empty()
-                    status_container = st.empty()
+# ── Auth helpers ──────────────────────────────────────────────────────────────
 
-                    # Poll for output
-                    for _ in range(300):  # Up to ~10 minutes
-                        time.sleep(2)
 
-                        try:
-                            output_response = requests.get(
-                                f"{API_URL}/job_output/{job_id}",
-                                headers=auth_headers(),
-                            )
-                            if output_response.status_code == 200:
-                                data = output_response.json()
-                                output_container.code(data["output"], language="text")
+def hash_password(password: str) -> bytes:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
 
-                                if data["status"] == "complete":
-                                    status_container.success("Job Complete!")
-                                    break
-                                elif data["status"] == "failed":
-                                    status_container.error("Job Failed")
-                                    break
-                                else:
-                                    status_container.info(f"Status: {data['status']}")
-                            elif output_response.status_code == 401:
-                                status_container.error("Session expired. Please log in again.")
-                                st.session_state.clear()
-                                break
-                        except Exception as e:
-                            status_container.error(f"Error: {str(e)}")
-                            break
 
-                elif response.status_code == 401:
-                    st.error("Session expired. Please log in again.")
-                    st.session_state.clear()
-                    st.rerun()
+def verify_password(password: str, password_hash: bytes) -> bool:
+    return bcrypt.checkpw(password.encode("utf-8"), password_hash)
+
+
+def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
+    """Extract and validate session token from Authorization header."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid token")
+
+    token = authorization.split(" ", 1)[1]
+    session_data = redis_client.get(f"session:{token}")
+
+    if not session_data:
+        raise HTTPException(status_code=401, detail="Session expired or invalid")
+
+    return json.loads(session_data)
+
+
+# ── Models ────────────────────────────────────────────────────────────────────
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    email: Optional[EmailStr] = None
+    password: str
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class TextEntry(BaseModel):
+    text: str
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+
+@app.post("/register")
+def register(req: RegisterRequest) -> dict:
+    if len(req.password) < 8:
+        raise HTTPException(
+            status_code=400, detail="Password must be at least 8 characters."
+        )
+    pw_hash = hash_password(req.password)
+    try:
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)",
+            (req.username.strip(), req.email, pw_hash),
+        )
+        conn.commit()
+        return {"message": "Account created"}
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="Username or email already exists.")
+    finally:
+        conn.close()
+
+
+@app.post("/login")
+def login(req: LoginRequest) -> dict:
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id, username, password_hash FROM users WHERE username = ?",
+        (req.username.strip(),),
+    ).fetchone()
+    conn.close()
+
+    if not row or not verify_password(req.password, row["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+
+    # Create session token stored in Redis
+    token = str(uuid.uuid4())
+    session_data = json.dumps({"id": row["id"], "username": row["username"]})
+    redis_client.setex(f"session:{token}", SESSION_TTL, session_data)
+
+    return {
+        "message": "Login ok",
+        "token": token,
+        "user": {"id": row["id"], "username": row["username"]},
+    }
+
+
+@app.post("/logout")
+def logout(user: dict = Depends(get_current_user), authorization: Optional[str] = Header(None)):
+    token = authorization.split(" ", 1)[1]
+    redis_client.delete(f"session:{token}")
+    return {"message": "Logged out"}
+
+
+@app.post("/submit_json")
+def submit_json(payload: dict, user: dict = Depends(get_current_user)) -> dict:
+    """Submit a SACE job — enqueues it on Celery via Redis."""
+    conn = get_db()
+    cursor = conn.execute(
+        "INSERT INTO submissions (user_id, type, data, status) VALUES (?, ?, ?, ?)",
+        (user["id"], "json", json.dumps(payload), "pending"),
+    )
+    job_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    submission_data = payload["data"]
+    email = submission_data.get("email", "unknown")
+
+    batch_json = {
+        "experiment_name": submission_data.get("experiment_name", f"SACE_User_{email}"),
+        "problems": submission_data.get("problems", []),
+        "algorithms": submission_data.get("algorithms", []),
+        "settings": submission_data.get("settings", {}),
+    }
+
+    # Dispatch to Celery worker
+    run_sace_job.delay(batch_json, job_id)
+
+    return {
+        "job_id": job_id,
+        "email": email,
+        "message": "Job submitted successfully and will be processed.",
+    }
+
+
+@app.get("/job_output/{job_id}")
+def get_job_output(job_id: int, user: dict = Depends(get_current_user)):
+    """HTTP polling endpoint — returns current accumulated output for the user's job."""
+    # Verify this job belongs to the requesting user
+    conn = get_db()
+    row = conn.execute(
+        "SELECT status FROM submissions WHERE id=? AND user_id=?",
+        (job_id, user["id"]),
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    output = redis_client.get(f"job_output:{job_id}") or ""
+    return {"output": output, "status": row["status"]}
+
+
+@app.get("/job_stream/{job_id}")
+async def job_stream_sse(job_id: int, user: dict = Depends(get_current_user)):
+    """Server-Sent Events endpoint for real-time streaming."""
+    # Verify ownership
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id FROM submissions WHERE id=? AND user_id=?",
+        (job_id, user["id"]),
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    async def event_generator():
+        pubsub = redis_client.pubsub()
+        pubsub.subscribe(f"job_stream:{job_id}")
+
+        existing = redis_client.get(f"job_output:{job_id}")
+        if existing:
+            yield f"data: {json.dumps({'output': existing})}\n\n"
+
+        try:
+            while True:
+                msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if msg and msg["type"] == "message":
+                    chunk = msg["data"]
+                    if chunk == "\n[DONE]\n":
+                        yield f"data: {json.dumps({'done': True})}\n\n"
+                        break
+                    yield f"data: {json.dumps({'output': chunk})}\n\n"
                 else:
-                    st.error("Failed to submit job to backend.")
-            except json.JSONDecodeError:
-                st.error("Invalid JSON file.")
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
-        else:
-            st.warning("Please enter an email and upload a file.")
+                    yield ": keepalive\n\n"
+                await asyncio.sleep(0.1)
+        finally:
+            pubsub.unsubscribe()
+            pubsub.close()
 
-    st.divider()
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-    # ── User's Jobs ───────────────────────────────────────────────────────────
 
-    st.subheader("My Jobs")
+@app.websocket("/ws/job/{job_id}")
+async def websocket_job_output(websocket: WebSocket, job_id: int):
+    """WebSocket endpoint for real-time streaming."""
+    # Extract token from query params for WebSocket auth
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4001, reason="Missing token")
+        return
+
+    session_data = redis_client.get(f"session:{token}")
+    if not session_data:
+        await websocket.close(code=4001, reason="Invalid token")
+        return
+
+    user = json.loads(session_data)
+
+    # Verify ownership
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id FROM submissions WHERE id=? AND user_id=?",
+        (job_id, user["id"]),
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        await websocket.close(code=4004, reason="Job not found")
+        return
+
+    await websocket.accept()
+
+    pubsub = redis_client.pubsub()
+    pubsub.subscribe(f"job_stream:{job_id}")
 
     try:
-        response = requests.get(
-            f"{API_URL}/my_jobs",
-            headers=auth_headers(),
-        )
-        if response.status_code == 200:
-            jobs = response.json()["jobs"]
+        existing = redis_client.get(f"job_output:{job_id}")
+        if existing:
+            await websocket.send_text(existing)
 
-            if jobs:
-                for job in jobs:
-                    job_data = job["data"].get("data", {})
-                    job_email = job_data.get("email", "Unknown")
-                    job_status = job.get("status", "unknown")
+        while True:
+            msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5)
+            if msg and msg["type"] == "message":
+                chunk = msg["data"]
+                if chunk == "\n[DONE]\n":
+                    conn = get_db()
+                    row = conn.execute(
+                        "SELECT status FROM submissions WHERE id=?",
+                        (job_id,),
+                    ).fetchone()
+                    conn.close()
+                    await websocket.send_json({"status": row["status"] if row else "complete"})
+                    break
+                await websocket.send_text(chunk)
+            await asyncio.sleep(0.1)
 
-                    status_icon = {
-                        "complete": "complete:",
-                        "failed": "failed:",
-                        "running": "running:",
-                        "pending": "pending:",
-                    }.get(job_status, "❓")
-
-                    with st.expander(
-                        f"{status_icon} Job {job['id']} — {job_email} — {job_status}"
-                    ):
-                        # Show output if job has run
-                        try:
-                            out_resp = requests.get(
-                                f"{API_URL}/job_output/{job['id']}",
-                                headers=auth_headers(),
-                            )
-                            if out_resp.status_code == 200:
-                                out_data = out_resp.json()
-                                if out_data["output"]:
-                                    st.code(out_data["output"], language="text")
-                                else:
-                                    st.info("No output yet.")
-                        except requests.exceptions.RequestException:
-                            st.warning("Could not fetch job output.")
-            else:
-                st.info("No jobs submitted yet.")
-        elif response.status_code == 401:
-            st.error("Session expired. Please log in again.")
-            st.session_state.clear()
-            st.rerun()
-        else:
-            st.error("Failed to fetch jobs.")
-    except requests.exceptions.RequestException:
-        st.error("Could not connect to backend. Make sure the server is running.")
+    except WebSocketDisconnect:
+        print(f"WebSocket disconnected for job {job_id}")
+    finally:
+        pubsub.unsubscribe()
+        pubsub.close()
 
 
-main()
+@app.get("/my_jobs")
+def get_my_jobs(user: dict = Depends(get_current_user)) -> dict:
+    """Get all jobs for the authenticated user."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, type, data, status FROM submissions WHERE user_id=? ORDER BY id DESC",
+        (user["id"],),
+    ).fetchall()
+    conn.close()
+    return {
+        "jobs": [
+            {
+                "id": r["id"],
+                "type": r["type"],
+                "data": json.loads(r["data"]),
+                "status": r["status"],
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.get("/get_submissions")
+def get_submissions() -> dict:
+    """Admin-style endpoint — consider removing or protecting in production."""
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM submissions").fetchall()
+    conn.close()
+    return {
+        "submissions": [
+            {
+                "id": r["id"],
+                "type": r["type"],
+                "data": json.loads(r["data"]),"status": r["status"],
+            }
+            for r in rows
+        ]
+    }

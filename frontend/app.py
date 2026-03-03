@@ -1,13 +1,32 @@
+
 import requests, json, streamlit as st, os, time
 
 # FastAPI endpoint
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
+
+
+def auth_headers() -> dict:
+    """Return Authorization header using the stored session token."""
+    token = st.session_state.get("token")
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
+
 
 def auth_ui():
     if st.session_state.get("logged_in"):
         user = st.session_state.get("user", {})
         st.success(f"Logged in as {user.get('username', '')}")
         if st.button("Logout"):
+            # Invalidate session on the backend
+            try:
+                requests.post(
+                    f"{API_URL}/logout",
+                    headers=auth_headers(),
+                    timeout=10,
+                )
+            except requests.exceptions.RequestException:
+                pass
             st.session_state.clear()
             st.rerun()
         return True
@@ -20,7 +39,9 @@ def auth_ui():
             new_username = st.text_input("Username", key="reg_user")
             new_email = st.text_input("Email (optional)", key="reg_email")
             new_password = st.text_input("Password", type="password", key="reg_pw")
-            new_password2 = st.text_input("Confirm password", type="password", key="reg_pw2")
+            new_password2 = st.text_input(
+                "Confirm password", type="password", key="reg_pw2"
+            )
             register_btn = st.form_submit_button("Create account")
 
         if register_btn:
@@ -62,8 +83,10 @@ def auth_ui():
                 timeout=10,
             )
             if r.status_code == 200:
+                data = r.json()
                 st.session_state["logged_in"] = True
-                st.session_state["user"] = r.json().get("user", {})
+                st.session_state["user"] = data.get("user", {})
+                st.session_state["token"] = data.get("token", "")
                 st.rerun()
             else:
                 st.error("Invalid username or password.")
@@ -75,7 +98,7 @@ def auth_ui():
 
 def main():
     st.title("BiLevel Optimization")
-    
+
     if not auth_ui():
         st.stop()
 
@@ -89,14 +112,14 @@ def main():
     )
 
     st.header("Authors")
-
     st.markdown(
         "_Sanup Araballi, Venkata Gandikota, Pranay Sharma, Prashant Khanduri, and Chilukuri K Mohan_"
     )
-
     st.write("[Github](https://github.com/sanuparaballi/SACEProject)")
 
     st.divider()
+
+    # ── Job Submission ────────────────────────────────────────────────────────
 
     with st.form("job_form"):
         email = st.text_input(
@@ -110,47 +133,57 @@ def main():
             st.error("Only .json files are allowed.")
         elif email and problem_file:
             try:
-                # Read JSON file contents
                 json_data = json.load(problem_file)
                 json_data["email"] = email
 
-                # Send POST request
                 response = requests.post(
-                    f"{API_URL}/submit_json", json={"data": json_data}
+                    f"{API_URL}/submit_json",
+                    json={"data": json_data},
+                    headers=auth_headers(),
                 )
 
                 if response.status_code == 200:
                     result = response.json()
-                    job_id = result['job_id']
+                    job_id = result["job_id"]
                     st.success(f"Job {job_id} submitted successfully!")
 
-                    # Display output area
                     st.subheader("Job Output:")
                     output_container = st.empty()
                     status_container = st.empty()
-                    
+
                     # Poll for output
-                    for _ in range(300):  # Poll for up to 10 minutes
-                        time.sleep(2)  # Check every 2 seconds
-                        
+                    for _ in range(300):  # Up to ~10 minutes
+                        time.sleep(2)
+
                         try:
-                            output_response = requests.get(f"{API_URL}/job_output/{job_id}")
+                            output_response = requests.get(
+                                f"{API_URL}/job_output/{job_id}",
+                                headers=auth_headers(),
+                            )
                             if output_response.status_code == 200:
                                 data = output_response.json()
-                                output_container.code(data['output'], language='text')
-                                
-                                if data['status'] == 'complete':
+                                output_container.code(data["output"], language="text")
+
+                                if data["status"] == "complete":
                                     status_container.success("Job Complete!")
                                     break
-                                elif data['status'] == 'failed':
+                                elif data["status"] == "failed":
                                     status_container.error("Job Failed")
                                     break
                                 else:
                                     status_container.info(f"Status: {data['status']}")
+                            elif output_response.status_code == 401:
+                                status_container.error("Session expired. Please log in again.")
+                                st.session_state.clear()
+                                break
                         except Exception as e:
                             status_container.error(f"Error: {str(e)}")
                             break
 
+                elif response.status_code == 401:
+                    st.error("Session expired. Please log in again.")
+                    st.session_state.clear()
+                    st.rerun()
                 else:
                     st.error("Failed to submit job to backend.")
             except json.JSONDecodeError:
@@ -161,27 +194,59 @@ def main():
             st.warning("Please enter an email and upload a file.")
 
     st.divider()
-    st.subheader("Submitted Jobs")
 
-    # Fetch jobs from the database (persists across refreshes)
+    # ── User's Jobs ───────────────────────────────────────────────────────────
+
+    st.subheader("My Jobs")
+
     try:
-        response = requests.get(f"{API_URL}/get_submissions")
+        response = requests.get(
+            f"{API_URL}/my_jobs",
+            headers=auth_headers(),
+        )
         if response.status_code == 200:
-            all_submissions = response.json()["submissions"]
-            # Filter to only show JSON submissions (actual jobs)
-            json_jobs = [sub for sub in all_submissions if sub["type"] == "json"]
-            
-            if json_jobs:
-                for i, job in enumerate(json_jobs, 1):
+            jobs = response.json()["jobs"]
+
+            if jobs:
+                for job in jobs:
                     job_data = job["data"].get("data", {})
                     job_email = job_data.get("email", "Unknown")
                     job_status = job.get("status", "unknown")
-                    st.write(f"Job {job['id']} — {job_email} — Status: {job_status}")
+
+                    status_icon = {
+                        "complete": "complete:",
+                        "failed": "failed:",
+                        "running": "running:",
+                        "pending": "pending:",
+                    }.get(job_status, "❓")
+
+                    with st.expander(
+                        f"{status_icon} Job {job['id']} — {job_email} — {job_status}"
+                    ):
+                        # Show output if job has run
+                        try:
+                            out_resp = requests.get(
+                                f"{API_URL}/job_output/{job['id']}",
+                                headers=auth_headers(),
+                            )
+                            if out_resp.status_code == 200:
+                                out_data = out_resp.json()
+                                if out_data["output"]:
+                                    st.code(out_data["output"], language="text")
+                                else:
+                                    st.info("No output yet.")
+                        except requests.exceptions.RequestException:
+                            st.warning("Could not fetch job output.")
             else:
                 st.info("No jobs submitted yet.")
+        elif response.status_code == 401:
+            st.error("Session expired. Please log in again.")
+            st.session_state.clear()
+            st.rerun()
         else:
-            st.error("Failed to fetch jobs from database.")
+            st.error("Failed to fetch jobs.")
     except requests.exceptions.RequestException:
         st.error("Could not connect to backend. Make sure the server is running.")
+
 
 main()

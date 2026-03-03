@@ -23,8 +23,10 @@ SESSION_TTL = 86400  # 24 hours
 # ── Database ──────────────────────────────────────────────────────────────────
 
 
+DB_PATH = os.environ.get("DB_PATH", "submissions.db")
+
 def get_db():
-    conn = sqlite3.connect("submissions.db")
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 

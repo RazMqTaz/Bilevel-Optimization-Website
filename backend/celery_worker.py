@@ -35,8 +35,10 @@ celery_app.conf.update(
 redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
 
 
+DB_PATH = os.environ.get("DB_PATH", "submissions.db")
+
 def get_db():
-    conn = sqlite3.connect("submissions.db")
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 

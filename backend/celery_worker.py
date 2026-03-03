@@ -110,6 +110,11 @@ def run_sace_job(self, batch_config: dict, job_id: int) -> dict:
     old_stderr = sys.stderr
     sys.stdout = RedisOutputCapture(job_id, redis_client, old_stdout)
     sys.stderr = RedisOutputCapture(job_id, redis_client, old_stderr)
+    # Add logging handler (after the stdout/stderr redirect lines)
+    log_handler = RedisLoggingHandler(job_id, redis_client)
+    log_handler.setFormatter(logging.Formatter("%(message)s"))
+    root_logger = logging.getLogger()
+    root_logger.addHandler(log_handler)
 
     os.environ["PYTHONUNBUFFERED"] = "1"
 
@@ -154,6 +159,8 @@ def run_sace_job(self, batch_config: dict, job_id: int) -> dict:
 
     finally:
         sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        root_logger.removeHandler(log_handler)
         # Clean up temp file
         try:
             os.unlink(tmp.name)

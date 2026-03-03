@@ -3,6 +3,7 @@ import sys
 import json
 import tempfile
 import sqlite3
+import logging
 
 from celery import Celery
 from redis import Redis
@@ -41,13 +42,13 @@ def get_db():
 
 
 class RedisOutputCapture:
-    """Captures stdout and streams it to Redis in real-time."""
+    """Captures stdout/stderr and streams to Redis in real-time."""
 
-    def __init__(self, job_id: int, redis: Redis):
+    def __init__(self, job_id: int, redis: Redis, original_stream):
         self.job_id = job_id
         self.redis = redis
         self.key = f"job_output:{job_id}"
-        self._old_stdout = sys.stdout
+        self._original = original_stream
 
     def write(self, s: str):
         if not s:
@@ -56,16 +57,34 @@ class RedisOutputCapture:
         self.redis.append(self.key, s)
         # Publish for any live listeners (WebSocket/SSE)
         self.redis.publish(f"job_stream:{self.job_id}", s)
-        # Also write to worker terminal for debugging
-        self._old_stdout.write(s)
-        self._old_stdout.flush()
+        # Also write to terminal for debugging
+        self._original.write(s)
+        self._original.flush()
         return len(s)
 
     def flush(self):
-        self._old_stdout.flush()
+        self._original.flush()
 
     def fileno(self):
-        return self._old_stdout.fileno()
+        return self._original.fileno()
+
+
+class RedisLoggingHandler(logging.Handler):
+    """Sends Python logging output to Redis."""
+
+    def __init__(self, job_id: int, redis: Redis):
+        super().__init__()
+        self.job_id = job_id
+        self.redis = redis
+        self.key = f"job_output:{job_id}"
+
+    def emit(self, record):
+        try:
+            msg = self.format(record) + "\n"
+            self.redis.append(self.key, msg)
+            self.redis.publish(f"job_stream:{self.job_id}", msg)
+        except Exception:
+            self.handleError(record)
 
 
 @celery_app.task(bind=True, name="run_sace_job")
@@ -84,10 +103,11 @@ def run_sace_job(self, batch_config: dict, job_id: int) -> dict:
     conn.commit()
     conn.close()
 
-    # Redirect stdout to Redis
-    capture = RedisOutputCapture(job_id, redis_client)
+    # Redirect stdout AND stderr to Redis
     old_stdout = sys.stdout
-    sys.stdout = capture
+    old_stderr = sys.stderr
+    sys.stdout = RedisOutputCapture(job_id, redis_client, old_stdout)
+    sys.stderr = RedisOutputCapture(job_id, redis_client, old_stderr)
 
     os.environ["PYTHONUNBUFFERED"] = "1"
 

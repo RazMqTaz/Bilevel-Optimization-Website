@@ -235,6 +235,21 @@ def main():
                                     st.code(out_data["output"], language="text")
                                 else:
                                     st.info("No output yet.")
+                                if job_status == "complete":
+                                    res_resp = requests.get(
+                                        f"{API_URL}/job_results/{job['id']}",
+                                        headers=auth_headers(),
+                                    )
+                                    if res_resp.status_code == 200:
+                                        csv_data = res_resp.json().get("data", "")
+                                        if csv_data:
+                                            st.download_button(
+                                                label="📥 Download Result CSV",
+                                                data=csv_data,
+                                                file_name=f"sace_job_{job['id']}_results.csv",
+                                                mime="text/csv",
+                                                key=f"download_{job['id']}" # Unique key required for loops
+                                            )
                         except requests.exceptions.RequestException:
                             st.warning("Could not fetch job output.")
             else:

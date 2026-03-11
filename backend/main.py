@@ -1,4 +1,3 @@
-
 from typing import Any, Dict, Optional
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, Header
 from fastapi.responses import StreamingResponse
@@ -23,10 +22,8 @@ SESSION_TTL = 86400  # 24 hours
 # ── Database ──────────────────────────────────────────────────────────────────
 
 
-DB_PATH = os.environ.get("DB_PATH", "submissions.db")
-
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect("submissions.db")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -41,6 +38,7 @@ def init_db():
             type TEXT NOT NULL,
             data TEXT NOT NULL,
             status TEXT DEFAULT 'pending',
+            result_data TEXT,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """
@@ -209,6 +207,24 @@ def get_job_output(job_id: int, user: dict = Depends(get_current_user)):
 
     output = redis_client.get(f"job_output:{job_id}") or ""
     return {"output": output, "status": row["status"]}
+
+
+@app.get("/job_results/{job_id}")
+def get_job_results(job_id: int, user: dict = Depends(get_current_user)):
+    """Return parsed CSV result data for a completed job."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT result_data FROM submissions WHERE id=? AND user_id=?",
+        (job_id, user["id"]),
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if row["result_data"]:
+        return {"data": row["result_data"]}
+    return {"error": "No results found"}
 
 
 @app.get("/job_stream/{job_id}")

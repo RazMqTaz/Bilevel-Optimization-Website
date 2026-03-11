@@ -1,9 +1,6 @@
-
-import requests
-import json
-import streamlit as st
-import os
-import time
+import requests, json, streamlit as st, os, time
+import pandas as pd
+from io import StringIO
 
 # FastAPI endpoint
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
@@ -170,6 +167,17 @@ def main():
 
                                 if data["status"] == "complete":
                                     status_container.success("Job Complete!")
+                                    # Fetch result CSV and save for plotting
+                                    res = requests.get(
+                                        f"{API_URL}/job_results/{job_id}",
+                                        headers=auth_headers(),
+                                    )
+                                    if res.status_code == 200:
+                                        result_csv = res.json().get("data", "")
+                                        if result_csv:
+                                            st.session_state["plot_data"] = result_csv
+                                        else:
+                                            st.warning("Job completed, but no result data was returned.")
                                     break
                                 elif data["status"] == "failed":
                                     status_container.error("Job Failed")
@@ -197,65 +205,86 @@ def main():
         else:
             st.warning("Please enter an email and upload a file.")
 
+    # ── Results Graph ─────────────────────────────────────────────────────────
+
+    if "plot_data" in st.session_state:
+        st.divider()
+        st.subheader("Optimization Results")
+        try:
+            df = pd.read_csv(StringIO(st.session_state["plot_data"]))
+            st.dataframe(df)
+
+            st.write("### Performance Graph")
+            numeric_cols = df.select_dtypes(include=["float64", "int64"]).columns.tolist()
+
+            if numeric_cols:
+                y_axes = st.multiselect(
+                    "Select metrics to plot:",
+                    numeric_cols,
+                    default=[numeric_cols[0]],
+                    key="metric_selector",
+                )
+                if y_axes:
+                    st.line_chart(df[y_axes])
+            else:
+                st.info("No numeric data found to plot.")
+        except Exception as e:
+            st.error(f"Error parsing or plotting data: {e}")
+
     st.divider()
 
-    # ── User's Jobs (live-updating) ────────────────────────────────────────────
+    # ── User's Jobs ───────────────────────────────────────────────────────────
 
-    fragment_fn = getattr(st, "fragment", None) or getattr(st, "experimental_fragment")
+    st.subheader("My Jobs")
 
-    @fragment_fn(run_every=3)
-    def my_jobs_section():
-        st.subheader("My Jobs")
-        try:
-            response = requests.get(
-                f"{API_URL}/my_jobs",
-                headers=auth_headers(),
-            )
-            if response.status_code == 200:
-                jobs = response.json()["jobs"]
+    try:
+        response = requests.get(
+            f"{API_URL}/my_jobs",
+            headers=auth_headers(),
+        )
+        if response.status_code == 200:
+            jobs = response.json()["jobs"]
 
-                if jobs:
-                    for job in jobs:
-                        job_data = job["data"].get("data", {})
-                        job_email = job_data.get("email", "Unknown")
-                        job_status = job.get("status", "unknown")
+            if jobs:
+                for job in jobs:
+                    job_data = job["data"].get("data", {})
+                    job_email = job_data.get("email", "Unknown")
+                    job_status = job.get("status", "unknown")
 
-                        status_icon = {
-                            "complete": "✅",
-                            "failed": "❌",
-                            "running": "🔄",
-                            "pending": "⏳",
-                        }.get(job_status, "❓")
+                    status_icon = {
+                        "complete": "✅",
+                        "failed": "❌",
+                        "running": "🔄",
+                        "pending": "⏳",
+                    }.get(job_status, "❓")
 
-                        with st.expander(
-                            f"{status_icon} Job {job['id']} — {job_email} — {job_status}",
-                            expanded=job_status in ("running", "pending"),
-                        ):
-                            try:
-                                out_resp = requests.get(
-                                    f"{API_URL}/job_output/{job['id']}",
-                                    headers=auth_headers(),
-                                )
-                                if out_resp.status_code == 200:
-                                    out_data = out_resp.json()
-                                    if out_data["output"]:
-                                        st.code(out_data["output"], language="text")
-                                    else:
-                                        st.info("No output yet.")
-                            except requests.exceptions.RequestException:
-                                st.warning("Could not fetch job output.")
-                else:
-                    st.info("No jobs submitted yet.")
-            elif response.status_code == 401:
-                st.error("Session expired. Please log in again.")
-                st.session_state.clear()
-                st.rerun()
+                    with st.expander(
+                        f"{status_icon} Job {job['id']} — {job_email} — {job_status}"
+                    ):
+                        # Show output if job has run
+                        try:
+                            out_resp = requests.get(
+                                f"{API_URL}/job_output/{job['id']}",
+                                headers=auth_headers(),
+                            )
+                            if out_resp.status_code == 200:
+                                out_data = out_resp.json()
+                                if out_data["output"]:
+                                    st.code(out_data["output"], language="text")
+                                else:
+                                    st.info("No output yet.")
+                        except requests.exceptions.RequestException:
+                            st.warning("Could not fetch job output.")
             else:
-                st.error("Failed to fetch jobs.")
-        except requests.exceptions.RequestException:
-            st.error("Could not connect to backend. Make sure the server is running.")
-
-    my_jobs_section()
+                st.info("No jobs submitted yet.")
+        elif response.status_code == 401:
+            st.error("Session expired. Please log in again.")
+            st.session_state.clear()
+            st.rerun()
+        else:
+            st.error("Failed to fetch jobs.")
+    except requests.exceptions.RequestException:
+        st.error("Could not connect to backend. Make sure the server is running.")
 
 
 main()

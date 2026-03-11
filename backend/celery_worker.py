@@ -1,9 +1,10 @@
 import os
 import sys
+import re
 import json
+import logging
 import tempfile
 import sqlite3
-import logging
 
 from celery import Celery
 from redis import Redis
@@ -35,10 +36,8 @@ celery_app.conf.update(
 redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
 
 
-DB_PATH = os.environ.get("DB_PATH", "submissions.db")
-
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect("submissions.db")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -110,7 +109,8 @@ def run_sace_job(self, batch_config: dict, job_id: int) -> dict:
     old_stderr = sys.stderr
     sys.stdout = RedisOutputCapture(job_id, redis_client, old_stdout)
     sys.stderr = RedisOutputCapture(job_id, redis_client, old_stderr)
-    # Add logging handler (after the stdout/stderr redirect lines)
+
+    # Add a logging handler so library log messages also go to Redis
     log_handler = RedisLoggingHandler(job_id, redis_client)
     log_handler.setFormatter(logging.Formatter("%(message)s"))
     root_logger = logging.getLogger()
@@ -126,10 +126,54 @@ def run_sace_job(self, batch_config: dict, job_id: int) -> dict:
             tmp.flush()
             main(tmp.name)
 
-        # Mark complete
+        # Parse captured output to find the results CSV filepath
+        output_str = redis_client.get(output_key) or ""
+        filepath_matches = re.findall(
+            r"All results have been saved to:\s*(.+)", output_str
+        )
+
+        result_content = ""
+        if filepath_matches:
+            raw_filepath = filepath_matches[-1].strip()
+            actual_filepath = None
+
+            # Search for the history CSV by timestamp
+            timestamp_match = re.search(r"(\d{8}-\d{6})", raw_filepath)
+            if timestamp_match:
+                timestamp = timestamp_match.group(1)
+                history_dirs = [
+                    "results/history",
+                    os.path.join("SACEProject", "results/history"),
+                ]
+                for history_dir in history_dirs:
+                    if os.path.exists(history_dir):
+                        for filename in os.listdir(history_dir):
+                            if timestamp in filename and filename.endswith(".csv"):
+                                actual_filepath = os.path.join(history_dir, filename)
+                                break
+                    if actual_filepath:
+                        break
+
+            # Fallback to the summary file path
+            if not actual_filepath:
+                candidate_paths = [
+                    raw_filepath,
+                    os.path.join("SACEProject", raw_filepath),
+                ]
+                for path in candidate_paths:
+                    if os.path.exists(path):
+                        actual_filepath = path
+                        break
+
+            if actual_filepath:
+                with open(actual_filepath, "r") as f:
+                    result_content = f.read()
+
+        # Mark complete and save result data
         conn = get_db()
         conn.execute(
-            "UPDATE submissions SET status='complete' WHERE id=?", (job_id,)
+            "UPDATE submissions SET status='complete', result_data=? WHERE id=?",
+            (result_content, job_id),
         )
         conn.commit()
         conn.close()

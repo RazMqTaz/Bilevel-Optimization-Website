@@ -11,6 +11,7 @@ from redis import Redis
 
 from backend.celery_worker import celery_app, run_sace_job
 
+DB_PATH = os.environ.get("DB_PATH", "submissions.db")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
 
@@ -23,7 +24,7 @@ SESSION_TTL = 86400  # 24 hours
 
 
 def get_db():
-    conn = sqlite3.connect("submissions.db")
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -41,7 +42,7 @@ def init_db():
             result_data TEXT,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
-    """
+        """
     )
     conn.execute(
         """
@@ -52,13 +53,16 @@ def init_db():
             password_hash BLOB NOT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
-    """
+        """
     )
     conn.commit()
     conn.close()
 
 
-init_db()
+@app.on_event("startup")
+def on_startup():
+    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+    init_db()
 
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────

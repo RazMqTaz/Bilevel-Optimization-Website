@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.abspath("SACEProject"))
 from SACEProject.main import main
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-
+DB_PATH = os.environ.get("DB_PATH", "submissions.db")
 # Celery app with Redis as both broker and result backend
 celery_app = Celery(
     "sace_worker",
@@ -37,10 +37,37 @@ redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
 
 
 def get_db():
-    conn = sqlite3.connect("submissions.db")
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
+def init_db():
+    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+    conn = get_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            data TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            result_data TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            email TEXT UNIQUE,
+            password_hash BLOB NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
 
 class RedisOutputCapture:
     """Captures stdout/stderr and streams to Redis in real-time."""

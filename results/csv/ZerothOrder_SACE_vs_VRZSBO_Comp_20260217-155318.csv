@@ -1,0 +1,18 @@
+run_id,problem_name,algorithm_name,final_ul_fitness,total_ul_nfe,total_ll_nfe,best_ul_solution,corresponding_ll_solution
+1,Hyper_Representation,SACE_ES,ERROR,ERROR,ERROR,Exception: ValueError,Algorithm 'SACE_ES' not found. Available algorithms: ['nestedde'; 'biga_lazy'; 'biga_aggressive'; 'sace_es_independent'; 'sace_es_mogp'; 'sace_es_heteroscedastic'; 'kktsolver'; 'bboa_kkt'; 'gbsa'; 'sace_pso']
+2,Hyper_Representation,SACE_ES,ERROR,ERROR,ERROR,Exception: ValueError,Algorithm 'SACE_ES' not found. Available algorithms: ['nestedde'; 'biga_lazy'; 'biga_aggressive'; 'sace_es_independent'; 'sace_es_mogp'; 'sace_es_heteroscedastic'; 'kktsolver'; 'bboa_kkt'; 'gbsa'; 'sace_pso']
+3,Hyper_Representation,SACE_ES,ERROR,ERROR,ERROR,Exception: ValueError,Algorithm 'SACE_ES' not found. Available algorithms: ['nestedde'; 'biga_lazy'; 'biga_aggressive'; 'sace_es_independent'; 'sace_es_mogp'; 'sace_es_heteroscedastic'; 'kktsolver'; 'bboa_kkt'; 'gbsa'; 'sace_pso']
+4,Hyper_Representation,SACE_ES,ERROR,ERROR,ERROR,Exception: ValueError,Algorithm 'SACE_ES' not found. Available algorithms: ['nestedde'; 'biga_lazy'; 'biga_aggressive'; 'sace_es_independent'; 'sace_es_mogp'; 'sace_es_heteroscedastic'; 'kktsolver'; 'bboa_kkt'; 'gbsa'; 'sace_pso']
+5,Hyper_Representation,SACE_ES,ERROR,ERROR,ERROR,Exception: ValueError,Algorithm 'SACE_ES' not found. Available algorithms: ['nestedde'; 'biga_lazy'; 'biga_aggressive'; 'sace_es_independent'; 'sace_es_mogp'; 'sace_es_heteroscedastic'; 'kktsolver'; 'bboa_kkt'; 'gbsa'; 'sace_pso']
+1,Hyper_Representation,NestedDE,2.608081e+02,5100,5355000,"[-0.34004387, 0.79162906, 0.41846459, 0.23479216,-0.14482611, 0.69121125,
+  0.4359088 ,-0.83393258, 0.35792607, 0.22504687, 0.72429987, 1.        ,
+ -0.00740642,-0.5495448 , 0.79425613,-0.29729348,-1.        , 0.63798958,
+  0.05889026, 0.65659945,-0.87796511,-0.00403014,-0.37984462,-1.        ,
+  0.54795766, 0.74839105,-0.47123927, 0.82003864, 0.02056083, 0.63666005,
+ -1.        ,-0.21137067,-0.09755998,-1.        ,-0.32764445,-0.29866963,
+ -0.86690848, 0.5932342 , 0.44585362, 0.11713831, 0.42655481, 0.65711106,
+  0.34607949,-0.69980119,-1.        ,-0.20389558,-0.95662199,-0.08525831,
+ -0.60278246, 1.        , 0.84341692,-0.05312868,-1.        ,-0.36742674,
+ -0.36324654,-0.91684471, 0.        , 0.45169726,-0.1754309 ,-1.        ,
+ -0.81310496, 0.36985487,-0.7115297 ,-0.33227686]","[-1.459861  , 3.69262073,-1.94874051, 0.39469751,-1.89710789,-0.30543276,
+  2.14907901, 4.52884634]"

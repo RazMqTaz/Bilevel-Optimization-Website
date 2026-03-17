@@ -38,6 +38,7 @@ def init_db():
             type TEXT NOT NULL,
             data TEXT NOT NULL,
             status TEXT DEFAULT 'pending',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             result_data TEXT,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
@@ -54,6 +55,11 @@ def init_db():
         )
     """
     )
+    # Lightweight migration for existing DBs (add created_at if missing)
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(submissions)").fetchall()]
+    if "created_at" not in cols:
+        conn.execute("ALTER TABLE submissions ADD COLUMN created_at DATETIME")
+        conn.execute("UPDATE submissions SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
     conn.commit()
     conn.close()
 
@@ -334,7 +340,7 @@ def get_my_jobs(user: dict = Depends(get_current_user)) -> dict:
     """Get all jobs for the authenticated user."""
     conn = get_db()
     rows = conn.execute(
-        "SELECT id, type, data, status FROM submissions WHERE user_id=? ORDER BY id DESC",
+        "SELECT id, type, data, status, created_at FROM submissions WHERE user_id=? ORDER BY id DESC",
         (user["id"],),
     ).fetchall()
     conn.close()
@@ -345,6 +351,7 @@ def get_my_jobs(user: dict = Depends(get_current_user)) -> dict:
                 "type": r["type"],
                 "data": json.loads(r["data"]),
                 "status": r["status"],
+                "created_at": r["created_at"],
             }
             for r in rows
         ]

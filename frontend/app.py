@@ -246,6 +246,31 @@ def main():
             jobs = response.json()["jobs"]
 
             if jobs:
+                # Results table + CSV download
+                table_rows = []
+                for job in jobs:
+                    job_data = job.get("data", {}).get("data", {})
+                    table_rows.append(
+                        {
+                            "id": job.get("id"),
+                            "email": job_data.get("email", ""),
+                            "type": job.get("type", ""),
+                            "status": job.get("status", ""),
+                            "created_at": job.get("created_at", ""),
+                        }
+                    )
+
+                jobs_df = pd.DataFrame(table_rows)
+                csv_bytes = jobs_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="Download DB results (CSV)",
+                    data=csv_bytes,
+                    file_name="my_jobs.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+                st.dataframe(jobs_df, use_container_width=True, hide_index=True)
+
                 for job in jobs:
                     job_data = job["data"].get("data", {})
                     job_email = job_data.get("email", "Unknown")

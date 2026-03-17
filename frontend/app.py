@@ -235,56 +235,87 @@ def main():
 
     # ── User's Jobs ───────────────────────────────────────────────────────────
 
-    st.subheader("My Jobs")
+    fragment_fn = getattr(st, "fragment", None) or getattr(st, "experimental_fragment")
 
-    try:
-        response = requests.get(
-            f"{API_URL}/my_jobs",
-            headers=auth_headers(),
-        )
-        if response.status_code == 200:
-            jobs = response.json()["jobs"]
+    @fragment_fn(run_every=3)
+    def my_jobs_section():
+        st.subheader("My Jobs")
 
-            if jobs:
-                for job in jobs:
-                    job_data = job["data"].get("data", {})
-                    job_email = job_data.get("email", "Unknown")
-                    job_status = job.get("status", "unknown")
+        try:
+            response = requests.get(
+                f"{API_URL}/my_jobs",
+                headers=auth_headers(),
+            )
+            if response.status_code == 200:
+                jobs = response.json()["jobs"]
 
-                    status_icon = {
-                        "complete": "✅",
-                        "failed": "❌",
-                        "running": "🔄",
-                        "pending": "⏳",
-                    }.get(job_status, "❓")
+                if jobs:
+                    # Results table + CSV download (includes timestamps)
+                    table_rows = []
+                    for job in jobs:
+                        job_data = job.get("data", {}).get("data", {})
+                        table_rows.append(
+                            {
+                                "id": job.get("id"),
+                                "email": job_data.get("email", ""),
+                                "type": job.get("type", ""),
+                                "status": job.get("status", ""),
+                                "created_at": job.get("created_at", ""),
+                            }
+                        )
 
-                    with st.expander(
-                        f"{status_icon} Job {job['id']} — {job_email} — {job_status}"
-                    ):
-                        # Show output if job has run
-                        try:
-                            out_resp = requests.get(
-                                f"{API_URL}/job_output/{job['id']}",
-                                headers=auth_headers(),
-                            )
-                            if out_resp.status_code == 200:
-                                out_data = out_resp.json()
-                                if out_data["output"]:
-                                    st.code(out_data["output"], language="text")
-                                else:
-                                    st.info("No output yet.")
-                        except requests.exceptions.RequestException:
-                            st.warning("Could not fetch job output.")
+                    jobs_df = pd.DataFrame(table_rows)
+                    csv_bytes = jobs_df.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        label="Download DB results (CSV)",
+                        data=csv_bytes,
+                        file_name="my_jobs.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+                    st.dataframe(jobs_df, use_container_width=True, hide_index=True)
+
+                    for job in jobs:
+                        job_data = job["data"].get("data", {})
+                        job_email = job_data.get("email", "Unknown")
+                        job_status = job.get("status", "unknown")
+
+                        status_icon = {
+                            "complete": "✅",
+                            "failed": "❌",
+                            "running": "🔄",
+                            "pending": "⏳",
+                        }.get(job_status, "❓")
+
+                        with st.expander(
+                            f"{status_icon} Job {job['id']} — {job_email} — {job_status}",
+                            expanded=job_status in ("running", "pending"),
+                        ):
+                            try:
+                                out_resp = requests.get(
+                                    f"{API_URL}/job_output/{job['id']}",
+                                    headers=auth_headers(),
+                                )
+                                if out_resp.status_code == 200:
+                                    out_data = out_resp.json()
+                                    if out_data["output"]:
+                                        st.code(out_data["output"], language="text")
+                                    else:
+                                        st.info("No output yet.")
+                            except requests.exceptions.RequestException:
+                                st.warning("Could not fetch job output.")
+                else:
+                    st.info("No jobs submitted yet.")
+            elif response.status_code == 401:
+                st.error("Session expired. Please log in again.")
+                st.session_state.clear()
+                st.rerun()
             else:
-                st.info("No jobs submitted yet.")
-        elif response.status_code == 401:
-            st.error("Session expired. Please log in again.")
-            st.session_state.clear()
-            st.rerun()
-        else:
-            st.error("Failed to fetch jobs.")
-    except requests.exceptions.RequestException:
-        st.error("Could not connect to backend. Make sure the server is running.")
+                st.error("Failed to fetch jobs.")
+        except requests.exceptions.RequestException:
+            st.error("Could not connect to backend. Make sure the server is running.")
+
+    my_jobs_section()
 
 
 main()

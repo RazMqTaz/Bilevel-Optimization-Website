@@ -1,32 +1,15 @@
-
 import requests, json, streamlit as st, os, time
+import pandas as pd
+from io import StringIO
 
 # FastAPI endpoint
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
-
-
-def auth_headers() -> dict:
-    """Return Authorization header using the stored session token."""
-    token = st.session_state.get("token")
-    if token:
-        return {"Authorization": f"Bearer {token}"}
-    return {}
-
 
 def auth_ui():
     if st.session_state.get("logged_in"):
         user = st.session_state.get("user", {})
         st.success(f"Logged in as {user.get('username', '')}")
         if st.button("Logout"):
-            # Invalidate session on the backend
-            try:
-                requests.post(
-                    f"{API_URL}/logout",
-                    headers=auth_headers(),
-                    timeout=10,
-                )
-            except requests.exceptions.RequestException:
-                pass
             st.session_state.clear()
             st.rerun()
         return True
@@ -39,9 +22,7 @@ def auth_ui():
             new_username = st.text_input("Username", key="reg_user")
             new_email = st.text_input("Email (optional)", key="reg_email")
             new_password = st.text_input("Password", type="password", key="reg_pw")
-            new_password2 = st.text_input(
-                "Confirm password", type="password", key="reg_pw2"
-            )
+            new_password2 = st.text_input("Confirm password", type="password", key="reg_pw2")
             register_btn = st.form_submit_button("Create account")
 
         if register_btn:
@@ -83,10 +64,8 @@ def auth_ui():
                 timeout=10,
             )
             if r.status_code == 200:
-                data = r.json()
                 st.session_state["logged_in"] = True
-                st.session_state["user"] = data.get("user", {})
-                st.session_state["token"] = data.get("token", "")
+                st.session_state["user"] = r.json().get("user", {})
                 st.rerun()
             else:
                 st.error("Invalid username or password.")
@@ -98,7 +77,7 @@ def auth_ui():
 
 def main():
     st.title("BiLevel Optimization")
-
+    
     if not auth_ui():
         st.stop()
 
@@ -112,14 +91,14 @@ def main():
     )
 
     st.header("Authors")
+
     st.markdown(
         "_Sanup Araballi, Venkata Gandikota, Pranay Sharma, Prashant Khanduri, and Chilukuri K Mohan_"
     )
+
     st.write("[Github](https://github.com/sanuparaballi/SACEProject)")
 
     st.divider()
-
-    # ── Job Submission ────────────────────────────────────────────────────────
 
     with st.form("job_form"):
         email = st.text_input(
@@ -133,57 +112,57 @@ def main():
             st.error("Only .json files are allowed.")
         elif email and problem_file:
             try:
+                # Read JSON file contents
                 json_data = json.load(problem_file)
                 json_data["email"] = email
 
+                # Send POST request
                 response = requests.post(
-                    f"{API_URL}/submit_json",
-                    json={"data": json_data},
-                    headers=auth_headers(),
+                    f"{API_URL}/submit_json", json={"data": json_data}
                 )
 
                 if response.status_code == 200:
                     result = response.json()
-                    job_id = result["job_id"]
+                    job_id = result['job_id']
                     st.success(f"Job {job_id} submitted successfully!")
 
+                    # Display output area
                     st.subheader("Job Output:")
                     output_container = st.empty()
                     status_container = st.empty()
-
+                    
                     # Poll for output
-                    for _ in range(300):  # Up to ~10 minutes
-                        time.sleep(2)
-
+                    for _ in range(300):  # Poll for up to 10 minutes
+                        time.sleep(2)  # Check every 2 seconds
+                        
                         try:
-                            output_response = requests.get(
-                                f"{API_URL}/job_output/{job_id}",
-                                headers=auth_headers(),
-                            )
+                            output_response = requests.get(f"{API_URL}/job_output/{job_id}")
                             if output_response.status_code == 200:
                                 data = output_response.json()
-                                output_container.code(data["output"], language="text")
-
-                                if data["status"] == "complete":
+                                output_container.code(data['output'], language='text')
+                                
+                                if data['status'] == 'complete':
                                     status_container.success("Job Complete!")
+                                    
+                                    # Fetch results and save to session state instead of plotting immediately
+                                    res = requests.get(f"{API_URL}/job_results/{job_id}")
+                                    if res.status_code == 200:
+                                        result_data = res.json().get("data", "")
+                                        if result_data:
+                                            # Save the raw CSV data into Streamlit's memory
+                                            st.session_state["plot_data"] = result_data
+                                        else:
+                                            st.warning("Job completed, but no result data was returned.")
                                     break
-                                elif data["status"] == "failed":
+                                elif data['status'] == 'failed':
                                     status_container.error("Job Failed")
                                     break
                                 else:
                                     status_container.info(f"Status: {data['status']}")
-                            elif output_response.status_code == 401:
-                                status_container.error("Session expired. Please log in again.")
-                                st.session_state.clear()
-                                break
                         except Exception as e:
                             status_container.error(f"Error: {str(e)}")
                             break
 
-                elif response.status_code == 401:
-                    st.error("Session expired. Please log in again.")
-                    st.session_state.clear()
-                    st.rerun()
                 else:
                     st.error("Failed to submit job to backend.")
             except json.JSONDecodeError:
@@ -192,76 +171,90 @@ def main():
                 st.error(f"Error: {str(e)}")
         else:
             st.warning("Please enter an email and upload a file.")
+            
+    if "plot_data" in st.session_state:
+        st.divider()
+        st.subheader("📊 Optimization Results & Analysis")
+        try:
+            # Parse CSV data
+            df = pd.read_csv(StringIO(st.session_state["plot_data"]))
+            
+            # 1. Data Preview
+            with st.expander("View Raw Data Table"):
+                st.dataframe(df, use_container_width=True) 
+            
+            # 2. Advanced Graphing Options (Requirement TM11-43)
+            st.write("### Performance Visualization")
+            numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns.tolist()
+            
+            if len(numeric_cols) >= 1:
+                col1, col2, col3 = st.columns([1, 1, 1])
+                
+                with col1:
+                    chart_type = st.selectbox(
+                        "Chart Type", 
+                        ["Line", "Bar", "Area", "Scatter"],
+                        help="Choose the visualization style for your problem type."
+                    )
+                
+                with col2:
+                    # Allow user to pick X-axis (e.g., 'iteration', 'time', or 'parameter')
+                    x_axis = st.selectbox("X-Axis (Independent Variable)", numeric_cols, index=0)
+                
+                with col3:
+                    # Multi-select for Y-axes
+                    y_axes = st.multiselect(
+                        "Y-Axes (Metrics)", 
+                        numeric_cols, 
+                        default=[numeric_cols[-1]] if len(numeric_cols) > 1 else [numeric_cols[0]]
+                    )
+
+                if y_axes:
+                    # Create the selected chart type
+                    plot_df = df.set_index(x_axis)[y_axes]
+                    
+                    if chart_type == "Line":
+                        st.line_chart(plot_df)
+                    elif chart_type == "Bar":
+                        st.bar_chart(plot_df)
+                    elif chart_type == "Area":
+                        st.area_chart(plot_df)
+                    elif chart_type == "Scatter":
+                        # For scatter, we use st.scatter_chart (Streamlit 1.25+)
+                        st.scatter_chart(df, x=x_axis, y=y_axes)
+                else:
+                    st.info("Select at least one metric to visualize results.")
+            else:
+                st.warning("The output data contains no numeric values for graphing.")
+
+        except Exception as e:
+            st.error(f"Error parsing or plotting data: {e}")
+
+        except Exception as e:
+            st.error(f"Error parsing or plotting data: {e}")
 
     st.divider()
+    st.subheader("Submitted Jobs")
 
-    # ── User's Jobs ───────────────────────────────────────────────────────────
-
-    st.subheader("My Jobs")
-
+    # Fetch jobs from the database (persists across refreshes)
     try:
-        response = requests.get(
-            f"{API_URL}/my_jobs",
-            headers=auth_headers(),
-        )
+        response = requests.get(f"{API_URL}/get_submissions")
         if response.status_code == 200:
-            jobs = response.json()["jobs"]
-
-            if jobs:
-                for job in jobs:
+            all_submissions = response.json()["submissions"]
+            # Filter to only show JSON submissions (actual jobs)
+            json_jobs = [sub for sub in all_submissions if sub["type"] == "json"]
+            
+            if json_jobs:
+                for i, job in enumerate(json_jobs, 1):
                     job_data = job["data"].get("data", {})
                     job_email = job_data.get("email", "Unknown")
                     job_status = job.get("status", "unknown")
-
-                    status_icon = {
-                        "complete": "complete:",
-                        "failed": "failed:",
-                        "running": "running:",
-                        "pending": "pending:",
-                    }.get(job_status, "❓")
-
-                    with st.expander(
-                        f"{status_icon} Job {job['id']} — {job_email} — {job_status}"
-                    ):
-                        # Show output if job has run
-                        try:
-                            out_resp = requests.get(
-                                f"{API_URL}/job_output/{job['id']}",
-                                headers=auth_headers(),
-                            )
-                            if out_resp.status_code == 200:
-                                out_data = out_resp.json()
-                                if out_data["output"]:
-                                    st.code(out_data["output"], language="text")
-                                else:
-                                    st.info("No output yet.")
-                                if job_status == "complete":
-                                    res_resp = requests.get(
-                                        f"{API_URL}/job_results/{job['id']}",
-                                        headers=auth_headers(),
-                                    )
-                                    if res_resp.status_code == 200:
-                                        csv_data = res_resp.json().get("data", "")
-                                        if csv_data:
-                                            st.download_button(
-                                                label="📥 Download Result CSV",
-                                                data=csv_data,
-                                                file_name=f"sace_job_{job['id']}_results.csv",
-                                                mime="text/csv",
-                                                key=f"download_{job['id']}" # Unique key required for loops
-                                            )
-                        except requests.exceptions.RequestException:
-                            st.warning("Could not fetch job output.")
+                    st.write(f"Job {job['id']} — {job_email} — Status: {job_status}")
             else:
                 st.info("No jobs submitted yet.")
-        elif response.status_code == 401:
-            st.error("Session expired. Please log in again.")
-            st.session_state.clear()
-            st.rerun()
         else:
-            st.error("Failed to fetch jobs.")
+            st.error("Failed to fetch jobs from database.")
     except requests.exceptions.RequestException:
         st.error("Could not connect to backend. Make sure the server is running.")
-
 
 main()

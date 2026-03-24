@@ -182,6 +182,9 @@ def main():
                                 elif data["status"] == "failed":
                                     status_container.error("Job Failed")
                                     break
+                                elif data["status"] == "cancelled":
+                                    status_container.warning("Job Cancelled")
+                                    break
                                 else:
                                     status_container.info(f"Status: {data['status']}")
                             elif output_response.status_code == 401:

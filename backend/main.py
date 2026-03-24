@@ -404,6 +404,42 @@ def get_my_jobs(user: dict = Depends(get_current_user)) -> dict:
     }
 
 
+@app.delete("/my_jobs/{job_id}")
+def delete_my_job(job_id: int, user: dict = Depends(get_current_user)) -> dict:
+    """Delete one specific job for the authenticated user."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT status FROM submissions WHERE id=? AND user_id=?",
+        (job_id, user["id"]),
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if row["status"] in ("pending", "running"):
+        conn.close()
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete an active job. Cancel it first, then delete it.",
+        )
+
+    conn.execute(
+        "DELETE FROM submissions WHERE id=? AND user_id=?",
+        (job_id, user["id"]),
+    )
+    conn.commit()
+    conn.close()
+
+    # Clean up related Redis keys for this job id.
+    redis_client.delete(
+        f"job_output:{job_id}",
+        f"job_task_id:{job_id}",
+        f"job_cancel:{job_id}",
+    )
+    return {"message": "Job deleted", "job_id": job_id}
+
+
 @app.get("/get_submissions")
 def get_submissions() -> dict:
     """Admin-style endpoint — consider removing or protecting in production."""

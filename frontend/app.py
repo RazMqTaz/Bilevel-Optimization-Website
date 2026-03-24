@@ -280,17 +280,28 @@ def main():
                         job_email = job_data.get("email", "Unknown")
                         job_status = job.get("status", "unknown")
 
-                        status_icon = {
-                            "complete": "✅",
-                            "failed": "❌",
-                            "running": "🔄",
-                            "pending": "⏳",
-                        }.get(job_status, "❓")
-
                         with st.expander(
-                            f"{status_icon} Job {job['id']} — {job_email} — {job_status}",
+                            f"Job {job['id']} — {job_email} — [{job_status.upper()}]",
                             expanded=job_status in ("running", "pending"),
                         ):
+                            # Add the Cancel Button for active jobs
+                            if job_status in ("running", "pending"):
+                                if st.button("Cancel Job", key=f"cancel_btn_{job['id']}"):
+                                    try:
+                                        cancel_req = requests.post(
+                                            f"{API_URL}/cancel_job/{job['id']}",
+                                            headers=auth_headers()
+                                        )
+                                        if cancel_req.status_code == 200:
+                                            st.toast(f"Job {job['id']} cancelled!")
+                                            time.sleep(0.5)
+                                            st.rerun()
+                                        else:
+                                            st.error("Failed to cancel job.")
+                                    except requests.exceptions.RequestException:
+                                        st.error("Could not reach backend to cancel.")
+                            
+                            # Fetch and display the job output
                             try:
                                 out_resp = requests.get(
                                     f"{API_URL}/job_output/{job['id']}",

@@ -60,7 +60,6 @@ def init_db():
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(submissions)").fetchall()]
     if "created_at" not in cols:
         conn.execute("ALTER TABLE submissions ADD COLUMN created_at DATETIME")
-        # Backfill so existing rows have something reasonable
         conn.execute(
             "UPDATE submissions SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"
         )
@@ -153,7 +152,6 @@ def login(req: LoginRequest) -> dict:
     if not row or not verify_password(req.password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
-    # Create session token stored in Redis
     token = str(uuid.uuid4())
     session_data = json.dumps({"id": row["id"], "username": row["username"]})
     redis_client.setex(f"session:{token}", SESSION_TTL, session_data)
@@ -194,8 +192,9 @@ def submit_json(payload: dict, user: dict = Depends(get_current_user)) -> dict:
         "settings": submission_data.get("settings", {}),
     }
 
-    # Dispatch to Celery worker
-    run_sace_job.delay(batch_json, job_id)
+    # Dispatch to Celery worker and store the task ID for cancellation
+    task = run_sace_job.delay(batch_json, job_id)
+    redis_client.set(f"job_task_id:{job_id}", task.id)
 
     return {
         "job_id": job_id,
@@ -204,10 +203,47 @@ def submit_json(payload: dict, user: dict = Depends(get_current_user)) -> dict:
     }
 
 
+@app.post("/cancel_job/{job_id}")
+def cancel_job(job_id: int, user: dict = Depends(get_current_user)):
+    """Cancel a pending or running SACE job."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT status FROM submissions WHERE id=? AND user_id=?",
+        (job_id, user["id"]),
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if row["status"] in ("complete", "failed", "cancelled"):
+        conn.close()
+        return {"message": f"Job already {row['status']}", "status": row["status"]}
+
+    # Set cancellation flag in Redis (worker checks this during cleanup)
+    redis_client.set(f"job_cancel:{job_id}", "1", ex=3600)
+
+    # Revoke the Celery task
+    task_id = redis_client.get(f"job_task_id:{job_id}")
+    if task_id:
+        celery_app.control.revoke(task_id, terminate=True, signal="SIGTERM")
+
+    # Update DB status
+    conn.execute(
+        "UPDATE submissions SET status='cancelled' WHERE id=?", (job_id,)
+    )
+    conn.commit()
+    conn.close()
+
+    # Notify any live listeners
+    redis_client.publish(f"job_stream:{job_id}", "\n[CANCELLED]\n")
+
+    return {"message": "Job cancelled", "job_id": job_id, "status": "cancelled"}
+
+
 @app.get("/job_output/{job_id}")
 def get_job_output(job_id: int, user: dict = Depends(get_current_user)):
     """HTTP polling endpoint — returns current accumulated output for the user's job."""
-    # Verify this job belongs to the requesting user
     conn = get_db()
     row = conn.execute(
         "SELECT status FROM submissions WHERE id=? AND user_id=?",
@@ -243,7 +279,6 @@ def get_job_results(job_id: int, user: dict = Depends(get_current_user)):
 @app.get("/job_stream/{job_id}")
 async def job_stream_sse(job_id: int, user: dict = Depends(get_current_user)):
     """Server-Sent Events endpoint for real-time streaming."""
-    # Verify ownership
     conn = get_db()
     row = conn.execute(
         "SELECT id FROM submissions WHERE id=? AND user_id=?",
@@ -270,6 +305,9 @@ async def job_stream_sse(job_id: int, user: dict = Depends(get_current_user)):
                     if chunk == "\n[DONE]\n":
                         yield f"data: {json.dumps({'done': True})}\n\n"
                         break
+                    if chunk == "\n[CANCELLED]\n":
+                        yield f"data: {json.dumps({'cancelled': True})}\n\n"
+                        break
                     yield f"data: {json.dumps({'output': chunk})}\n\n"
                 else:
                     yield ": keepalive\n\n"
@@ -284,7 +322,6 @@ async def job_stream_sse(job_id: int, user: dict = Depends(get_current_user)):
 @app.websocket("/ws/job/{job_id}")
 async def websocket_job_output(websocket: WebSocket, job_id: int):
     """WebSocket endpoint for real-time streaming."""
-    # Extract token from query params for WebSocket auth
     token = websocket.query_params.get("token")
     if not token:
         await websocket.close(code=4001, reason="Missing token")
@@ -297,7 +334,6 @@ async def websocket_job_output(websocket: WebSocket, job_id: int):
 
     user = json.loads(session_data)
 
-    # Verify ownership
     conn = get_db()
     row = conn.execute(
         "SELECT id FROM submissions WHERE id=? AND user_id=?",
@@ -331,6 +367,9 @@ async def websocket_job_output(websocket: WebSocket, job_id: int):
                     ).fetchone()
                     conn.close()
                     await websocket.send_json({"status": row["status"] if row else "complete"})
+                    break
+                if chunk == "\n[CANCELLED]\n":
+                    await websocket.send_json({"status": "cancelled"})
                     break
                 await websocket.send_text(chunk)
             await asyncio.sleep(0.1)
@@ -376,7 +415,8 @@ def get_submissions() -> dict:
             {
                 "id": r["id"],
                 "type": r["type"],
-                "data": json.loads(r["data"]),"status": r["status"],
+                "data": json.loads(r["data"]),
+                "status": r["status"],
             }
             for r in rows
         ]

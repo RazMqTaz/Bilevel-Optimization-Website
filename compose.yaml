@@ -29,7 +29,7 @@ services:
   celery-worker:
     image: razmqtaz/backend:latest-arm64
     container_name: celery-worker
-    command: celery -A backend.celery_worker worker --loglevel=info --concurrency=2
+    command: celery -A backend.celery_worker worker --loglevel=info --concurrency=1
     volumes:
       - submissions_data:/app/data
     networks:

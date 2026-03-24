@@ -2,11 +2,13 @@ import os
 import sys
 import re
 import json
+import signal
 import logging
 import tempfile
 import sqlite3
 
 from celery import Celery
+from celery.exceptions import SoftTimeLimitExceeded
 from redis import Redis
 
 sys.path.insert(0, os.path.abspath("SACEProject"))
@@ -14,6 +16,7 @@ from SACEProject.main import main
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 DB_PATH = os.environ.get("DB_PATH", "submissions.db")
+
 # Celery app with Redis as both broker and result backend
 celery_app = Celery(
     "sace_worker",
@@ -41,10 +44,12 @@ def get_db():
     conn.row_factory = sqlite3.Row
     return conn
 
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     conn = get_db()
-    conn.execute("""
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -54,8 +59,10 @@ def init_db():
             result_data TEXT,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
-    """)
-    conn.execute("""
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
@@ -63,11 +70,14 @@ def init_db():
             password_hash BLOB NOT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
-    """)
+        """
+    )
     conn.commit()
     conn.close()
 
+
 init_db()
+
 
 class RedisOutputCapture:
     """Captures stdout/stderr and streams to Redis in real-time."""
@@ -81,11 +91,8 @@ class RedisOutputCapture:
     def write(self, s: str):
         if not s:
             return 0
-        # Append to Redis key
         self.redis.append(self.key, s)
-        # Publish for any live listeners (WebSocket/SSE)
         self.redis.publish(f"job_stream:{self.job_id}", s)
-        # Also write to terminal for debugging
         self._original.write(s)
         self._original.flush()
         return len(s)
@@ -117,12 +124,22 @@ class RedisLoggingHandler(logging.Handler):
 
 @celery_app.task(bind=True, name="run_sace_job")
 def run_sace_job(self, batch_config: dict, job_id: int) -> dict:
-    """Execute a SACE optimization job."""
+    """Execute a SACE optimization job (cancellation-aware)."""
     output_key = f"job_output:{job_id}"
+    cancel_key = f"job_cancel:{job_id}"
+    cancelled = False
+    tmp = None
+
+    # Handle SIGTERM from revoke(terminate=True) gracefully
+    def handle_sigterm(signum, frame):
+        nonlocal cancelled
+        cancelled = True
+        raise SystemExit("Job cancelled by user")
+
+    old_handler = signal.signal(signal.SIGTERM, handle_sigterm)
 
     # Initialize empty output in Redis
     redis_client.set(output_key, "")
-    # Set a TTL so old job outputs don't live forever (24 hours)
     redis_client.expire(output_key, 86400)
 
     # Mark as running
@@ -137,7 +154,6 @@ def run_sace_job(self, batch_config: dict, job_id: int) -> dict:
     sys.stdout = RedisOutputCapture(job_id, redis_client, old_stdout)
     sys.stderr = RedisOutputCapture(job_id, redis_client, old_stderr)
 
-    # Add a logging handler so library log messages also go to Redis
     log_handler = RedisLoggingHandler(job_id, redis_client)
     log_handler.setFormatter(logging.Formatter("%(message)s"))
     root_logger = logging.getLogger()
@@ -146,6 +162,11 @@ def run_sace_job(self, batch_config: dict, job_id: int) -> dict:
     os.environ["PYTHONUNBUFFERED"] = "1"
 
     try:
+        # Check if already cancelled before starting
+        if redis_client.get(cancel_key):
+            cancelled = True
+            raise SystemExit("Job cancelled before start")
+
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False
         ) as tmp:
@@ -164,7 +185,6 @@ def run_sace_job(self, batch_config: dict, job_id: int) -> dict:
             raw_filepath = filepath_matches[-1].strip()
             actual_filepath = None
 
-            # Search for the history CSV by timestamp
             timestamp_match = re.search(r"(\d{8}-\d{6})", raw_filepath)
             if timestamp_match:
                 timestamp = timestamp_match.group(1)
@@ -181,7 +201,6 @@ def run_sace_job(self, batch_config: dict, job_id: int) -> dict:
                     if actual_filepath:
                         break
 
-            # Fallback to the summary file path
             if not actual_filepath:
                 candidate_paths = [
                     raw_filepath,
@@ -205,13 +224,26 @@ def run_sace_job(self, batch_config: dict, job_id: int) -> dict:
         conn.commit()
         conn.close()
 
-        # Notify listeners that the job finished
-        redis_client.publish(
-            f"job_stream:{job_id}", "\n[DONE]\n"
-        )
+        redis_client.publish(f"job_stream:{job_id}", "\n[DONE]\n")
         redis_client.set(f"job_status:{job_id}", "complete")
 
         return {"job_id": job_id, "status": "complete"}
+
+    except (SystemExit, KeyboardInterrupt):
+        # Reached via SIGTERM handler or pre-start cancel check
+        cancelled = True
+        msg = f"\n[CANCELLED] Job {job_id} was cancelled by user.\n"
+        redis_client.append(output_key, msg)
+        redis_client.publish(f"job_stream:{job_id}", "\n[CANCELLED]\n")
+
+        conn = get_db()
+        conn.execute(
+            "UPDATE submissions SET status='cancelled' WHERE id=?", (job_id,)
+        )
+        conn.commit()
+        conn.close()
+
+        return {"job_id": job_id, "status": "cancelled"}
 
     except Exception as e:
         error_msg = f"\n[ERROR] Job {job_id} failed: {e}\n"
@@ -232,8 +264,10 @@ def run_sace_job(self, batch_config: dict, job_id: int) -> dict:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
         root_logger.removeHandler(log_handler)
-        # Clean up temp file
+        signal.signal(signal.SIGTERM, old_handler)
+        redis_client.delete(cancel_key)
         try:
-            os.unlink(tmp.name)
+            if tmp:
+                os.unlink(tmp.name)
         except OSError:
             pass

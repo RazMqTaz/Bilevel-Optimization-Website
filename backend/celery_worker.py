@@ -11,6 +11,8 @@ from celery import Celery
 from celery.exceptions import SoftTimeLimitExceeded
 from redis import Redis
 
+from backend.config_validator import validate_config, ConfigValidationError
+
 sys.path.insert(0, os.path.abspath("SACEProject"))
 from SACEProject.main import main
 
@@ -129,6 +131,19 @@ def run_sace_job(self, batch_config: dict, job_id: int) -> dict:
     cancel_key = f"job_cancel:{job_id}"
     cancelled = False
     tmp = None
+
+    # ── Defense-in-depth: re-validate before SACE ever sees this ──
+    try:
+        batch_config = validate_config(batch_config)
+    except ConfigValidationError as e:
+        conn = get_db()
+        conn.execute(
+            "UPDATE submissions SET status='failed', result_data=? WHERE id=?",
+            (f"Validation failed: {e.detail}", job_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"job_id": job_id, "status": "failed", "error": e.detail}
 
     # Handle SIGTERM from revoke(terminate=True) gracefully
     def handle_sigterm(signum, frame):

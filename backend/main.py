@@ -10,6 +10,7 @@ import bcrypt
 from redis import Redis
 
 from backend.celery_worker import celery_app, run_sace_job
+from backend.config_validator import validate_config, ConfigValidationError
 
 DB_PATH = os.environ.get("DB_PATH", "submissions.db")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
@@ -172,19 +173,14 @@ def logout(user: dict = Depends(get_current_user), authorization: Optional[str] 
 
 @app.post("/submit_json")
 def submit_json(payload: dict, user: dict = Depends(get_current_user)) -> dict:
-    """Submit a SACE job — enqueues it on Celery via Redis."""
-    conn = get_db()
-    cursor = conn.execute(
-        "INSERT INTO submissions (user_id, type, data, status) VALUES (?, ?, ?, ?)",
-        (user["id"], "json", json.dumps(payload), "pending"),
-    )
-    job_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
+    """Submit a SACE job — validates config, then enqueues on Celery."""
+    submission_data = payload.get("data")
+    if not submission_data or not isinstance(submission_data, dict):
+        raise HTTPException(status_code=422, detail="Missing or invalid 'data' field.")
 
-    submission_data = payload["data"]
     email = submission_data.get("email", "unknown")
 
+    # ── Build the batch config from the submission ──
     batch_json = {
         "experiment_name": submission_data.get("experiment_name", f"SACE_User_{email}"),
         "problems": submission_data.get("problems", []),
@@ -192,8 +188,24 @@ def submit_json(payload: dict, user: dict = Depends(get_current_user)) -> dict:
         "settings": submission_data.get("settings", {}),
     }
 
-    # Dispatch to Celery worker and store the task ID for cancellation
-    task = run_sace_job.delay(batch_json, job_id)
+    # ── VALIDATE before persisting or dispatching ──
+    try:
+        validated_batch = validate_config(batch_json)
+    except ConfigValidationError as e:
+        raise HTTPException(status_code=422, detail=e.detail)
+
+    # ── Persist the validated config (not the raw payload) ──
+    conn = get_db()
+    cursor = conn.execute(
+        "INSERT INTO submissions (user_id, type, data, status) VALUES (?, ?, ?, ?)",
+        (user["id"], "json", json.dumps(validated_batch), "pending"),
+    )
+    job_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    # ── Dispatch the validated config to Celery ──
+    task = run_sace_job.delay(validated_batch, job_id)
     redis_client.set(f"job_task_id:{job_id}", task.id)
 
     return {

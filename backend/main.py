@@ -42,6 +42,8 @@ def init_db():
             status TEXT DEFAULT 'pending',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             result_data TEXT,
+            result_hash TEXT,
+            hash_algorithm TEXT,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
         """
@@ -64,6 +66,10 @@ def init_db():
         conn.execute(
             "UPDATE submissions SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"
         )
+    if "result_hash" not in cols:
+        conn.execute("ALTER TABLE submissions ADD COLUMN result_hash TEXT")
+    if "hash_algorithm" not in cols:
+        conn.execute("ALTER TABLE submissions ADD COLUMN hash_algorithm TEXT")
     conn.commit()
     conn.close()
 
@@ -275,7 +281,7 @@ def get_job_results(job_id: int, user: dict = Depends(get_current_user)):
     """Return parsed CSV result data for a completed job."""
     conn = get_db()
     row = conn.execute(
-        "SELECT result_data FROM submissions WHERE id=? AND user_id=?",
+        "SELECT result_data, result_hash, hash_algorithm FROM submissions WHERE id=? AND user_id=?",
         (job_id, user["id"]),
     ).fetchone()
     conn.close()
@@ -284,7 +290,11 @@ def get_job_results(job_id: int, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Job not found")
 
     if row["result_data"]:
-        return {"data": row["result_data"]}
+        return {
+            "data": row["result_data"],
+            "result_hash": row["result_hash"],
+            "hash_algorithm": row["hash_algorithm"],
+        }
     return {"error": "No results found"}
 
 
@@ -398,7 +408,7 @@ def get_my_jobs(user: dict = Depends(get_current_user)) -> dict:
     """Get all jobs for the authenticated user."""
     conn = get_db()
     rows = conn.execute(
-        "SELECT id, type, data, status, created_at FROM submissions WHERE user_id=? ORDER BY id DESC",
+        "SELECT id, type, data, status, created_at, result_hash, hash_algorithm FROM submissions WHERE user_id=? ORDER BY id DESC",
         (user["id"],),
     ).fetchall()
     conn.close()
@@ -410,6 +420,8 @@ def get_my_jobs(user: dict = Depends(get_current_user)) -> dict:
                 "data": json.loads(r["data"]),
                 "status": r["status"],
                 "created_at": r["created_at"],
+                "result_hash": r["result_hash"],
+                "hash_algorithm": r["hash_algorithm"],
             }
             for r in rows
         ]

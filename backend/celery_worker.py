@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import json
+import hashlib
 import signal
 import logging
 import tempfile
@@ -59,6 +60,8 @@ def init_db():
             data TEXT NOT NULL,
             status TEXT DEFAULT 'pending',
             result_data TEXT,
+            result_hash TEXT,
+            hash_algorithm TEXT,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
         """
@@ -74,6 +77,11 @@ def init_db():
         )
         """
     )
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(submissions)").fetchall()]
+    if "result_hash" not in cols:
+        conn.execute("ALTER TABLE submissions ADD COLUMN result_hash TEXT")
+    if "hash_algorithm" not in cols:
+        conn.execute("ALTER TABLE submissions ADD COLUMN hash_algorithm TEXT")
     conn.commit()
     conn.close()
 
@@ -230,11 +238,14 @@ def run_sace_job(self, batch_config: dict, job_id: int) -> dict:
                 with open(actual_filepath, "r") as f:
                     result_content = f.read()
 
+        result_hash = hashlib.sha256(result_content.encode("utf-8")).hexdigest()
+        hash_algorithm = "sha256"
+
         # Mark complete and save result data
         conn = get_db()
         conn.execute(
-            "UPDATE submissions SET status='complete', result_data=? WHERE id=?",
-            (result_content, job_id),
+            "UPDATE submissions SET status='complete', result_data=?, result_hash=?, hash_algorithm=? WHERE id=?",
+            (result_content, result_hash, hash_algorithm, job_id),
         )
         conn.commit()
         conn.close()

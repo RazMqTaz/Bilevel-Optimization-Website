@@ -287,41 +287,45 @@ def main():
                             f"Job {job['id']} — {job_email} — [{job_status.upper()}]",
                             expanded=job_status in ("running", "pending"),
                         ):
-                            # Add the Cancel Button for active jobs
-                            if job_status in ("running", "pending"):
-                                if st.button("Cancel Job", key=f"cancel_btn_{job['id']}"):
-                                    try:
-                                        cancel_req = requests.post(
-                                            f"{API_URL}/cancel_job/{job['id']}",
-                                            headers=auth_headers()
-                                        )
-                                        if cancel_req.status_code == 200:
-                                            st.toast(f"Job {job['id']} cancelled!")
-                                            time.sleep(0.5)
-                                            st.rerun()
-                                        else:
-                                            st.error("Failed to cancel job.")
-                                    except requests.exceptions.RequestException:
-                                        st.error("Could not reach backend to cancel.")
-                            else:
-                                if st.button("Delete Job", key=f"delete_btn_{job['id']}"):
-                                    try:
-                                        delete_req = requests.delete(
-                                            f"{API_URL}/my_jobs/{job['id']}",
-                                            headers=auth_headers(),
-                                        )
-                                        if delete_req.status_code == 200:
-                                            st.toast(f"Job {job['id']} deleted.")
-                                            time.sleep(0.3)
-                                            st.rerun()
-                                        elif delete_req.status_code == 404:
-                                            st.error("Job not found.")
-                                        elif delete_req.status_code == 409:
-                                            st.error("Active jobs must be cancelled before deletion.")
-                                        else:
-                                            st.error("Failed to delete job.")
-                                    except requests.exceptions.RequestException:
-                                        st.error("Could not reach backend to delete job.")
+                            # --- UI FIX: Use columns to align buttons horizontally ---
+                            col1, col2 = st.columns([1, 5]) # 1:5 ratio keeps buttons neat and flush left
+                            
+                            with col1:
+                                if job_status in ("running", "pending"):
+                                    if st.button("Cancel Job", key=f"cancel_btn_{job['id']}"):
+                                        try:
+                                            cancel_req = requests.post(
+                                                f"{API_URL}/cancel_job/{job['id']}",
+                                                headers=auth_headers()
+                                            )
+                                            if cancel_req.status_code == 200:
+                                                st.toast(f"Job {job['id']} cancelled!")
+                                                time.sleep(0.5)
+                                                st.rerun()
+                                            else:
+                                                st.error("Failed to cancel job.")
+                                        except requests.exceptions.RequestException:
+                                            st.error("Could not reach backend to cancel.")
+                                else:
+                                    if st.button("Delete Job", key=f"delete_btn_{job['id']}"):
+                                        try:
+                                            delete_req = requests.delete(
+                                                f"{API_URL}/my_jobs/{job['id']}",
+                                                headers=auth_headers(),
+                                            )
+                                            if delete_req.status_code == 200:
+                                                st.toast(f"Job {job['id']} deleted.")
+                                                time.sleep(0.3)
+                                                st.rerun()
+                                            elif delete_req.status_code == 404:
+                                                st.error("Job not found.")
+                                            elif delete_req.status_code == 409:
+                                                st.error("Active jobs must be cancelled before deletion.")
+                                            else:
+                                                st.error("Failed to delete job.")
+                                        except requests.exceptions.RequestException:
+                                            st.error("Could not reach backend to delete job.")
+                            # ---------------------------------------------------------
                             
                             # Fetch and display the job output
                             try:

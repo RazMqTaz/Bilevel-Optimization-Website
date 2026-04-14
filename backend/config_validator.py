@@ -21,7 +21,7 @@ ALLOWED_PROBLEMS = frozenset({
 ALLOWED_ALGORITHMS = frozenset({
     "nestedde",
     "biga_lazy", "biga_aggressive",
-    "sace_es_independent", "sace_es_mogp", "sace_es_heteroscedastic",
+    "sace_es", "sace_es_independent", "sace_es_mogp", "sace_es_heteroscedastic",
     "kktsolver",
     "bboa_kkt",
     "gbsa",
@@ -36,7 +36,7 @@ MAX_TOTAL_RUNS = 500
 MAX_CONFIG_SIZE_BYTES = 64 * 1024  # 64 KB
 
 
-# ── Param schemas (extra="forbid" rejects unknown keys) ────────────────
+# ── Param schemas (extra="allow" lets unknown keys pass through to SACE) ─
 class ProblemParams(BaseModel):
     """Whitelisted problem constructor kwargs with safe ranges."""
     # SMD suite
@@ -52,7 +52,7 @@ class ProblemParams(BaseModel):
     m: Optional[int] = Field(None, ge=1, le=100)
 
     class Config:
-        extra = "forbid"
+        extra = "allow"
 
 
 class AlgorithmParams(BaseModel):
@@ -66,7 +66,7 @@ class AlgorithmParams(BaseModel):
     strategy: Optional[str] = Field(None, pattern=r"^(lazy|aggressive)$")
 
     class Config:
-        extra = "forbid"
+        extra = "allow"
 
 
 # ── Top-level schemas ──────────────────────────────────────────────────

@@ -200,7 +200,11 @@ def main():
                     st.session_state.clear()
                     st.rerun()
                 else:
-                    st.error("Failed to submit job to backend.")
+                    try:
+                        detail = response.json().get("detail", "Unknown error")
+                    except Exception:
+                        detail = response.text
+                        st.error(f"Submission failed ({response.status_code}): {detail}")
             except json.JSONDecodeError:
                 st.error("Invalid JSON file.")
             except Exception as e:
